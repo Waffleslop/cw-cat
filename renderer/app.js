@@ -1,5 +1,18 @@
-// CW-CAT Renderer — UI logic for spectrum display, signal table, and settings
+// CW CAT Renderer — UI logic for spectrum display, signal table, and settings
 'use strict';
+
+// --- Theme ---
+function isLightTheme() {
+  return document.documentElement.getAttribute('data-theme') === 'light';
+}
+
+function applyTheme(light) {
+  document.documentElement.setAttribute('data-theme', light ? 'light' : 'dark');
+  // Clear waterfall when switching themes (colormap changes)
+  if (typeof waterfallCtx !== 'undefined' && waterfallCtx) {
+    try { waterfallCtx.clearRect(0, 0, waterfallCanvas.width, waterfallCanvas.height); } catch {}
+  }
+}
 
 // --- State ---
 let settings = {};
@@ -87,7 +100,7 @@ function renderSpectrum(data) {
   const N = mags.length;
 
   // Clear
-  spectrumCtx.fillStyle = '#000';
+  spectrumCtx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--canvas-bg').trim();
   spectrumCtx.fillRect(0, 0, w, h);
 
   // Auto-scale using percentile-based approach:
@@ -127,9 +140,10 @@ function renderSpectrum(data) {
   // Draw grid lines with dB labels
   const gridStep = dbRange > 60 ? 20 : 10;
   const gridStart = Math.ceil(dbMin / gridStep) * gridStep;
-  spectrumCtx.strokeStyle = 'rgba(79, 195, 247, 0.1)';
+  const cs = getComputedStyle(document.documentElement);
+  spectrumCtx.strokeStyle = cs.getPropertyValue('--spectrum-grid').trim();
   spectrumCtx.lineWidth = 1;
-  spectrumCtx.fillStyle = 'rgba(79, 195, 247, 0.4)';
+  spectrumCtx.fillStyle = cs.getPropertyValue('--spectrum-grid-text').trim();
   spectrumCtx.font = '9px monospace';
   for (let db = gridStart; db <= dbMax; db += gridStep) {
     const y = h - ((db - dbMin) / dbRange) * h;
@@ -141,7 +155,7 @@ function renderSpectrum(data) {
   }
 
   // Draw spectrum line
-  spectrumCtx.strokeStyle = '#4fc3f7';
+  spectrumCtx.strokeStyle = cs.getPropertyValue('--spectrum-line').trim();
   spectrumCtx.lineWidth = 1;
   spectrumCtx.beginPath();
 
@@ -158,7 +172,7 @@ function renderSpectrum(data) {
   spectrumCtx.lineTo(w, h);
   spectrumCtx.lineTo(0, h);
   spectrumCtx.closePath();
-  spectrumCtx.fillStyle = 'rgba(79, 195, 247, 0.08)';
+  spectrumCtx.fillStyle = cs.getPropertyValue('--spectrum-fill').trim();
   spectrumCtx.fill();
 
   // Update label
@@ -192,20 +206,38 @@ function renderWaterfallRow(mags, dbMin, dbMax) {
     const db = Math.max(dbMin, Math.min(dbMax, mags[binIdx]));
     const normalized = (db - dbMin) / dbRange; // 0..1
 
-    // Color map: black → blue → cyan → yellow → white
+    // Color map: theme-dependent
     let r, g, b;
-    if (normalized < 0.25) {
-      const t = normalized / 0.25;
-      r = 0; g = 0; b = Math.floor(t * 180);
-    } else if (normalized < 0.5) {
-      const t = (normalized - 0.25) / 0.25;
-      r = 0; g = Math.floor(t * 200); b = 180;
-    } else if (normalized < 0.75) {
-      const t = (normalized - 0.5) / 0.25;
-      r = Math.floor(t * 255); g = 200 + Math.floor(t * 55); b = Math.floor(180 * (1 - t));
+    if (isLightTheme()) {
+      // Light: white → light blue → blue → dark blue → black
+      if (normalized < 0.25) {
+        const t = normalized / 0.25;
+        r = Math.floor(232 - t * 100); g = Math.floor(236 - t * 100); b = 240;
+      } else if (normalized < 0.5) {
+        const t = (normalized - 0.25) / 0.25;
+        r = Math.floor(132 - t * 100); g = Math.floor(136 - t * 80); b = Math.floor(240 - t * 40);
+      } else if (normalized < 0.75) {
+        const t = (normalized - 0.5) / 0.25;
+        r = Math.floor(32 + t * 180); g = Math.floor(56 * (1 - t)); b = Math.floor(200 - t * 100);
+      } else {
+        const t = (normalized - 0.75) / 0.25;
+        r = Math.floor(212 + t * 43); g = Math.floor(t * 60); b = Math.floor(100 - t * 100);
+      }
     } else {
-      const t = (normalized - 0.75) / 0.25;
-      r = 255; g = 255; b = Math.floor(t * 255);
+      // Dark: black → blue → cyan → yellow → white
+      if (normalized < 0.25) {
+        const t = normalized / 0.25;
+        r = 0; g = 0; b = Math.floor(t * 180);
+      } else if (normalized < 0.5) {
+        const t = (normalized - 0.25) / 0.25;
+        r = 0; g = Math.floor(t * 200); b = 180;
+      } else if (normalized < 0.75) {
+        const t = (normalized - 0.5) / 0.25;
+        r = Math.floor(t * 255); g = 200 + Math.floor(t * 55); b = Math.floor(180 * (1 - t));
+      } else {
+        const t = (normalized - 0.75) / 0.25;
+        r = 255; g = 255; b = Math.floor(t * 255);
+      }
     }
 
     const idx = x * 4;
@@ -235,7 +267,7 @@ function renderFreqAxis(data) {
     label.style.left = (frac * 100) + '%';
     label.style.transform = 'translateX(-50%)';
     label.style.fontSize = '9px';
-    label.style.color = '#6a6a7a';
+    label.style.color = 'var(--text-dim)';
     label.style.top = '3px';
 
     if (Math.abs(freqOffset) < 100) {
@@ -344,6 +376,7 @@ async function loadSettingsUi() {
   document.getElementById('set-threshold').value = settings.detectionThreshold || 6;
   document.getElementById('set-min-wpm').value = settings.minWpm || 8;
   document.getElementById('set-max-wpm').value = settings.maxWpm || 60;
+  document.getElementById('set-light-mode').checked = !!settings.lightMode;
 }
 
 async function saveSettingsUi() {
@@ -363,10 +396,16 @@ async function saveSettingsUi() {
     detectionThreshold: parseInt(document.getElementById('set-threshold').value) || 6,
     minWpm: parseInt(document.getElementById('set-min-wpm').value) || 8,
     maxWpm: parseInt(document.getElementById('set-max-wpm').value) || 60,
+    lightMode: document.getElementById('set-light-mode').checked,
   };
 
   await window.api.saveSettings(newSettings);
   settings = newSettings;
+
+  // Apply theme and sync header toggle
+  applyTheme(newSettings.lightMode);
+  document.getElementById('theme-toggle').checked = !!newSettings.lightMode;
+
   settingsOverlay.classList.remove('open');
 }
 
@@ -376,6 +415,9 @@ settingsBtn.addEventListener('click', () => {
 });
 
 settingsCancel.addEventListener('click', () => {
+  // Revert theme if changed in settings but not saved
+  applyTheme(!!settings.lightMode);
+  document.getElementById('theme-toggle').checked = !!settings.lightMode;
   settingsOverlay.classList.remove('open');
 });
 
@@ -384,8 +426,18 @@ settingsSave.addEventListener('click', saveSettingsUi);
 // Close overlay on background click
 settingsOverlay.addEventListener('click', (e) => {
   if (e.target === settingsOverlay) {
+    applyTheme(!!settings.lightMode);
+    document.getElementById('theme-toggle').checked = !!settings.lightMode;
     settingsOverlay.classList.remove('open');
   }
+});
+
+// --- Theme toggle (header) ---
+document.getElementById('theme-toggle').addEventListener('change', async (e) => {
+  const light = e.target.checked;
+  applyTheme(light);
+  settings.lightMode = light;
+  await window.api.saveSettings(settings);
 });
 
 // --- Helpers ---
@@ -492,7 +544,7 @@ window.api.onClusterStatus((s) => {
   window.api.onUpdateUpToDate(() => {
     // Brief flash, then hide
     banner.style.display = 'flex';
-    message.textContent = 'CW-CAT is up to date';
+    message.textContent = 'CW CAT is up to date';
     downloadBtn.style.display = 'none';
     releaseLink.style.display = 'none';
     installBtn.style.display = 'none';
@@ -526,9 +578,19 @@ window.api.onClusterStatus((s) => {
   });
 })();
 
+// --- Titlebar controls ---
+document.getElementById('tb-min').addEventListener('click', () => window.api.minimize());
+document.getElementById('tb-max').addEventListener('click', () => window.api.maximize());
+document.getElementById('tb-close').addEventListener('click', () => window.api.close());
+
 // --- Initialization ---
 async function init() {
   settings = await window.api.getSettings();
+
+  // Apply saved theme
+  applyTheme(!!settings.lightMode);
+  document.getElementById('theme-toggle').checked = !!settings.lightMode;
+
   const status = await window.api.getStatus();
   if (status) updateStatus(status);
 }

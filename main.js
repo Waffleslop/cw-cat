@@ -74,13 +74,13 @@ function createWindow() {
     minWidth: 900,
     minHeight: 600,
     backgroundColor: '#1a1a2e',
+    frame: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
     },
-    autoHideMenuBar: true,
-    title: 'CW-CAT',
+    title: 'CW CAT',
   });
 
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
@@ -341,13 +341,15 @@ function connectRadio() {
       console.error('[Radio] Error:', err.message);
     });
 
+    let lastSentCenterMHz = 0;
     smartSdr.on('slice', (slice) => {
       if (win && !win.isDestroyed()) {
         win.webContents.send('slice-update', slice);
       }
-      // Forward center frequency to DSP worker for CW sub-band filtering
+      // Forward center frequency to DSP worker — only when RF frequency actually changes
       const centerMHz = smartSdr.getSliceFreq(0);
-      if (centerMHz > 0) {
+      if (centerMHz > 0 && centerMHz !== lastSentCenterMHz) {
+        lastSentCenterMHz = centerMHz;
         sendToDspWorker({ type: 'set-center-freq', centerMHz });
       }
     });
@@ -538,6 +540,15 @@ autoUpdater.on('error', (err) => {
   }
 });
 
+// Window control IPC
+ipcMain.on('win-minimize', () => { if (win) win.minimize(); });
+ipcMain.on('win-maximize', () => {
+  if (!win) return;
+  if (win.isMaximized()) win.unmaximize();
+  else win.maximize();
+});
+ipcMain.on('win-close', () => { if (win) win.close(); });
+
 ipcMain.on('start-download', () => { autoUpdater.downloadUpdate(); });
 ipcMain.on('install-update', () => { autoUpdater.quitAndInstall(); });
 ipcMain.on('check-for-updates', () => { checkForUpdates(); });
@@ -548,7 +559,7 @@ function checkForUpdatesManual() {
   const options = {
     hostname: 'api.github.com',
     path: '/repos/Waffleslop/cw-cat/releases/latest',
-    headers: { 'User-Agent': 'CW-CAT/' + currentVersion },
+    headers: { 'User-Agent': 'CW_CAT/' + currentVersion },
     timeout: 10000,
   };
   const req = https.get(options, (res) => {

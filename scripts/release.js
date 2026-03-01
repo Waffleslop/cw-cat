@@ -63,7 +63,7 @@ function main() {
 2. Run the installer — Windows SmartScreen may show **"Windows protected your PC"**
    - Click **More info** then **Run anyway**
    - This is normal for unsigned apps
-3. CW-CAT will launch automatically after install
+3. CW CAT will launch automatically after install
 
 ## SHA-256 Checksums
 

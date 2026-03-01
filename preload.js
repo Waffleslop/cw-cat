@@ -20,6 +20,11 @@ contextBridge.exposeInMainWorld('api', {
   onRbnStatus: (cb) => ipcRenderer.on('rbn-status', (_e, s) => cb(s)),
   onClusterStatus: (cb) => ipcRenderer.on('cluster-status', (_e, s) => cb(s)),
 
+  // Window controls
+  minimize: () => ipcRenderer.send('win-minimize'),
+  maximize: () => ipcRenderer.send('win-maximize'),
+  close: () => ipcRenderer.send('win-close'),
+
   // Auto-update
   onUpdateAvailable: (cb) => ipcRenderer.on('update-available', (_e, d) => cb(d)),
   onUpdaterActive: (cb) => ipcRenderer.on('updater-active', (_e, active) => cb(active)),

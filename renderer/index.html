@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'">
-  <title>CW-CAT</title>
+  <title>CW CAT</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -23,10 +23,10 @@
     </div>
   </div>
 
-  <!-- Header -->
-  <div class="header">
-    <div class="header-left">
-      <span class="app-title">CW-CAT</span>
+  <!-- Titlebar -->
+  <div class="titlebar">
+    <div class="titlebar-left">
+      <span class="titlebar-title">CW CAT</span>
       <div class="status-item">
         <span class="status-dot disconnected" id="radio-dot"></span>
         <span id="radio-label">Radio</span>
@@ -43,12 +43,24 @@
         <span class="status-dot disconnected" id="dsp-dot"></span>
         <span>DSP</span>
       </div>
-    </div>
-    <div class="header-right">
       <span class="status-item" id="iq-info">IQ: --</span>
       <span class="status-item" id="signals-count">Signals: 0</span>
       <span class="utc-clock" id="utc-clock">00:00:00Z</span>
+    </div>
+    <div class="titlebar-right">
+      <label class="theme-toggle" title="Toggle light/dark mode">
+        <span class="theme-toggle-label">Light</span>
+        <div class="switch">
+          <input type="checkbox" id="theme-toggle">
+          <span class="switch-slider"></span>
+        </div>
+      </label>
       <button class="settings-btn" id="settings-btn" title="Settings">&#9881;</button>
+      <div class="titlebar-controls">
+        <button class="titlebar-btn" id="tb-min" title="Minimize">&#x2014;</button>
+        <button class="titlebar-btn" id="tb-max" title="Maximize">&#x25A1;</button>
+        <button class="titlebar-btn titlebar-close" id="tb-close" title="Close">&#x2715;</button>
+      </div>
     </div>
   </div>
 
@@ -196,6 +208,14 @@
         <div class="settings-row">
           <label>Max WPM</label>
           <input type="number" id="set-max-wpm" min="5" max="60" step="1">
+        </div>
+      </div>
+
+      <div class="settings-group">
+        <h3>Appearance</h3>
+        <div class="settings-row">
+          <label>Light Mode</label>
+          <input type="checkbox" id="set-light-mode">
         </div>
       </div>
 

@@ -22,7 +22,7 @@
   },
   "build": {
     "appId": "com.waffleslop.cwcat",
-    "productName": "CW-CAT",
+    "productName": "CW CAT",
     "icon": "assets/icon.png",
     "files": [
       "main.js",
@@ -49,7 +49,7 @@
       "perMachine": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "CW-CAT"
+      "shortcutName": "CW CAT"
     },
     "portable": {
       "artifactName": "${productName}-${version}-portable.${ext}"
