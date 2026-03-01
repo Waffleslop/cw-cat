@@ -244,7 +244,13 @@ function processIqBlock(iqData) {
     const age = currentTime - state.lastActive;
     let shouldRemove = false;
 
-    if (age > CHANNEL_TIMEOUT_S) {
+    // QSB-resistant timeout: channels with decoded text or locked speed get
+    // a longer grace period, since they're more likely to be real signals
+    // that will come back after a fade
+    const hasUsefulContent = state.text.length > 5 || state.decoder._speedLocked;
+    const effectiveTimeout = hasUsefulContent ? CHANNEL_TIMEOUT_S * 2 : CHANNEL_TIMEOUT_S;
+
+    if (age > effectiveTimeout) {
       shouldRemove = true;
     } else if (currentTime - (state.createdTime || 0) > 15) {
       // After 15 seconds, evict channels producing only garbage
