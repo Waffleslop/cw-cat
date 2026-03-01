@@ -26,6 +26,7 @@ let minWpm = 8;
 let maxWpm = 60;
 let ctyDb = null;
 let centerFreqMHz = 0; // Slice center frequency in MHz
+let pendingFreqChange = false; // Defer channel clearing to next processIqBlock()
 
 // --- DSP objects ---
 let fftProcessor = null;
@@ -34,10 +35,10 @@ let callsignExtractor = null;
 
 // Per-channel state: Map of freqOffset → { channel, envelope, decoder, text, lastActive }
 const channelState = new Map();
-const MAX_CHANNELS = 20; // Limit channels — each runs a channelizer (CPU cost)
+const MAX_CHANNELS = 50; // Increased from 20 for busy bands (40m evening, contest)
 const CHANNEL_TIMEOUT_S = 30; // Remove channels inactive for this many seconds
-const MIN_SNR_FOR_CHANNEL = 12; // Lowered from 15 for better weak-signal sensitivity
-const MIN_PERSISTENCE_FOR_CHANNEL = 8; // Create channels faster (8 frames ≈ 85ms)
+const MIN_SNR_FOR_CHANNEL = 10; // Lowered from 12 for better weak-signal sensitivity
+const MIN_PERSISTENCE_FOR_CHANNEL = 6; // Faster channel creation (6 frames ≈ 65ms, was 8)
 const CHANNEL_OUTPUT_RATE = 800; // Channelizer output rate in Hz
 const CHANNEL_BANDWIDTH = 150;   // Channel bandwidth in Hz
 
@@ -69,6 +70,12 @@ function initialize() {
 }
 
 function processIqBlock(iqData) {
+  // Apply deferred frequency change — clear channels safely outside iteration
+  if (pendingFreqChange) {
+    pendingFreqChange = false;
+    channelState.clear();
+  }
+
   const now = Date.now();
   const currentTime = totalSamplesProcessed / sampleRate;
   diagBlockCount++;
@@ -161,15 +168,25 @@ function processIqBlock(iqData) {
   for (const sig of signals) {
     const key = Math.round(sig.freqOffset);
 
-    // Check if too close to an existing channel (within 500 Hz)
+    // Check if too close to an existing channel (within 300 Hz)
     let tooClose = false;
     for (const existingKey of channelState.keys()) {
-      if (Math.abs(key - existingKey) < 300) {
+      const freqDelta = Math.abs(key - existingKey);
+      if (freqDelta < 300) {
         tooClose = true;
-        // Update existing channel's activity if signal is near it
         const existing = channelState.get(existingKey);
         existing.lastActive = currentTime;
         if (sig.snr > existing.snr) existing.snr = sig.snr;
+
+        // Frequency drift tracking: if signal moved >20Hz but <150Hz, update NCO
+        // This keeps the channelizer centered on the actual signal as it drifts
+        const actualDelta = sig.freqOffset - existing.freqOffset;
+        if (Math.abs(actualDelta) > 20 && Math.abs(actualDelta) < 150) {
+          // Smooth the frequency update to avoid jitter
+          const newFreq = existing.freqOffset * 0.8 + sig.freqOffset * 0.2;
+          existing.channel.setFreqOffset(newFreq);
+          existing.freqOffset = newFreq;
+        }
         break;
       }
     }
@@ -273,9 +290,10 @@ function processIqBlock(iqData) {
     const transitions = state.envelope.process(magnitudes, state.channel.outputRate);
 
     // Check dynamic range — need sufficient contrast for CW detection
-    // Use lower threshold once speed is locked (we know it's real CW)
+    // Graduated threshold: strict before speed lock, lenient after
+    // After lock we know it's real CW so we can trust weaker signals
     const dr = state.envelope._peakMag / (state.envelope._noiseMag + 1e-10);
-    const drThreshold = state.decoder._speedLocked ? 4.0 : 6.0;
+    const drThreshold = state.decoder._speedLocked ? 3.0 : 5.0;
     if (dr < drThreshold) continue;
 
     // Feed transitions to Morse decoder
@@ -316,8 +334,9 @@ function processIqBlock(iqData) {
     }
 
     // Check for transmission timeout — use lastKeyTime (last actual keying) for decoder reset
+    // Use a consistent 3-5s timeout, clamped to prevent issues at extreme WPM
     const silenceSec = currentTime - state.lastKeyTime;
-    const timeoutSec = Math.max(state.decoder._ditDuration * 20, 5.0);
+    const timeoutSec = Math.min(Math.max(state.decoder._ditDuration * 25, 3.0), 8.0);
     if (state.decoder._started && silenceSec > timeoutSec) {
       state.decoder.flush();
       // Append any final text from the decoder before resetting
@@ -336,9 +355,9 @@ function processIqBlock(iqData) {
       // Reset decoder for next transmission (preserves speed estimate)
       state.decoder.reset();
       state.lastDecoderText = '';
-      // Trim old text to prevent unbounded growth, keep last 150 chars
-      if (state.text.length > 300) {
-        state.text = state.text.slice(-150);
+      // Trim old text to prevent unbounded growth, keep last 200 chars
+      if (state.text.length > 400) {
+        state.text = state.text.slice(-200);
       }
     }
   }
@@ -348,8 +367,8 @@ function processIqBlock(iqData) {
 
 function tryExtractCallsign(key, state) {
   // Use recent text window to avoid re-matching old patterns
-  // 120 chars keeps CQ/DE context visible longer as text scrolls
-  const text = state.text.length > 120 ? state.text.slice(-120) : state.text;
+  // 160 chars keeps CQ/DE context visible longer as text scrolls (was 120)
+  const text = state.text.length > 160 ? state.text.slice(-160) : state.text;
   // Require at least 8 characters — "CQ W1AW" is 7, "DE W1AW" is 7
   if (text.length < 8) return;
 
@@ -359,7 +378,7 @@ function tryExtractCallsign(key, state) {
   const hasContext = /(?:CQ|DE|[NEIT]ST)/.test(text);
   if (!hasContext && state.snr < 20) return; // Low-SNR needs context words
 
-  const results = callsignExtractor.extractNew(text);
+  const results = callsignExtractor.extractNew(text, state.snr);
   for (const { callsign, type } of results) {
     console.log(`[DSP] SPOT FOUND: ${callsign} (${type}) @ ${state.freqOffset.toFixed(0)}Hz — "${text.slice(-40)}"`);
     parentPort.postMessage({
@@ -415,8 +434,8 @@ parentPort.on('message', (msg) => {
         if (msg.centerMHz && msg.centerMHz !== centerFreqMHz) {
           centerFreqMHz = msg.centerMHz;
           console.log(`[DSP] Center frequency: ${centerFreqMHz.toFixed(6)} MHz`);
-          // Clear channels when frequency changes — they're no longer valid
-          channelState.clear();
+          // Defer channel clearing to next processIqBlock() to avoid race conditions
+          pendingFreqChange = true;
         }
         break;
 
