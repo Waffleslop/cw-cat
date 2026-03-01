@@ -8,6 +8,21 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+  <!-- Update banner -->
+  <div id="update-banner" class="update-banner" style="display:none;">
+    <span id="update-message"></span>
+    <div id="update-progress" style="display:none;">
+      <div class="update-progress-bar"><div class="update-progress-fill" id="update-progress-fill"></div></div>
+      <span id="update-progress-text">0%</span>
+    </div>
+    <div id="update-actions">
+      <button id="update-download-btn" style="display:none;">Download</button>
+      <a id="update-release-link" href="#" style="display:none;" target="_blank">View Release</a>
+      <button id="update-install-btn" style="display:none;">Restart to Update</button>
+      <button id="update-dismiss-btn" class="update-dismiss">&times;</button>
+    </div>
+  </div>
+
   <!-- Header -->
   <div class="header">
     <div class="header-left">

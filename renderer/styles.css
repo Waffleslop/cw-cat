@@ -488,3 +488,81 @@ table.signals-table tr.new-spot {
   align-items: center;
   gap: 16px;
 }
+
+/* Update banner */
+.update-banner {
+  background: var(--bg-tertiary);
+  border-bottom: 1px solid var(--accent-dim);
+  padding: 6px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.update-banner button {
+  background: var(--accent-dim);
+  color: var(--text-primary);
+  border: none;
+  padding: 3px 12px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.update-banner button:hover {
+  background: var(--accent);
+  color: var(--bg-primary);
+}
+
+.update-dismiss {
+  background: none !important;
+  font-size: 16px !important;
+  padding: 0 4px !important;
+  opacity: 0.6;
+}
+
+.update-dismiss:hover {
+  opacity: 1;
+  background: none !important;
+  color: var(--text-primary) !important;
+}
+
+#update-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+#update-release-link {
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.update-progress-bar {
+  width: 120px;
+  height: 6px;
+  background: var(--bg-secondary);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.update-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  width: 0%;
+  transition: width 0.3s;
+}
+
+#update-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#update-progress-text {
+  font-size: 12px;
+  color: var(--text-secondary);
+}

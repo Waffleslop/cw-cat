@@ -8,6 +8,7 @@ const dgram = require('dgram');
 process.stdout?.on('error', () => {});
 process.stderr?.on('error', () => {});
 
+const { autoUpdater } = require('electron-updater');
 const { SmartSdrClient } = require('./lib/smartsdr');
 const { RbnClient } = require('./lib/rbn');
 const { DxClusterClient } = require('./lib/dxcluster');
@@ -491,6 +492,112 @@ ipcMain.handle('get-status', () => {
   };
 });
 
+// --- Auto-update (electron-updater for installed, GitHub API fallback for portable) ---
+
+autoUpdater.autoDownload = false;
+autoUpdater.autoInstallOnAppQuit = false;
+autoUpdater.logger = {
+  info: (...args) => console.log('[updater]', ...args),
+  warn: (...args) => console.warn('[updater]', ...args),
+  error: (...args) => console.error('[updater]', ...args),
+  debug: (...args) => console.log('[updater:debug]', ...args),
+};
+
+autoUpdater.on('update-available', (info) => {
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('update-available', {
+      version: info.version,
+      releaseName: info.releaseName || '',
+      releaseNotes: info.releaseNotes || '',
+    });
+  }
+});
+
+autoUpdater.on('download-progress', (progress) => {
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('update-download-progress', { percent: Math.round(progress.percent) });
+  }
+});
+
+autoUpdater.on('update-downloaded', () => {
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('update-downloaded');
+  }
+});
+
+autoUpdater.on('update-not-available', () => {
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('update-up-to-date');
+  }
+});
+
+autoUpdater.on('error', (err) => {
+  console.error('autoUpdater error:', err);
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('update-error', err?.message || String(err));
+  }
+});
+
+ipcMain.on('start-download', () => { autoUpdater.downloadUpdate(); });
+ipcMain.on('install-update', () => { autoUpdater.quitAndInstall(); });
+ipcMain.on('check-for-updates', () => { checkForUpdates(); });
+
+function checkForUpdatesManual() {
+  const https = require('https');
+  const currentVersion = require('./package.json').version;
+  const options = {
+    hostname: 'api.github.com',
+    path: '/repos/Waffleslop/cw-cat/releases/latest',
+    headers: { 'User-Agent': 'CW-CAT/' + currentVersion },
+    timeout: 10000,
+  };
+  const req = https.get(options, (res) => {
+    let body = '';
+    res.on('data', (chunk) => { body += chunk; });
+    res.on('end', () => {
+      try {
+        const data = JSON.parse(body);
+        const latestTag = (data.tag_name || '').replace(/^v/, '');
+        if (latestTag && isNewerVersion(currentVersion, latestTag)) {
+          const releaseUrl = data.html_url || `https://github.com/Waffleslop/cw-cat/releases/tag/${data.tag_name}`;
+          if (win && !win.isDestroyed()) {
+            win.webContents.send('update-available', { version: latestTag, url: releaseUrl, headline: data.name || '' });
+          }
+        } else if (win && !win.isDestroyed()) {
+          win.webContents.send('update-up-to-date');
+        }
+      } catch { /* silently ignore parse errors */ }
+    });
+  });
+  req.on('error', () => { /* silently ignore — no internet is fine */ });
+}
+
+function isNewerVersion(current, latest) {
+  const a = current.split('.').map(Number);
+  const b = latest.split('.').map(Number);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const av = a[i] || 0;
+    const bv = b[i] || 0;
+    if (bv > av) return true;
+    if (bv < av) return false;
+  }
+  return false;
+}
+
+function checkForUpdates() {
+  if (autoUpdater.isUpdaterActive()) {
+    autoUpdater.checkForUpdates().catch(() => {});
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('updater-active', true);
+    }
+  } else {
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('updater-active', false);
+    }
+    checkForUpdatesManual();
+  }
+}
+
 // --- App lifecycle ---
 
 app.whenReady().then(() => {
@@ -514,6 +621,11 @@ app.whenReady().then(() => {
     connectOutputs();
     sendStatus();
   }, 1000);
+
+  // Check for updates 5 seconds after launch
+  setTimeout(() => {
+    checkForUpdates();
+  }, 5000);
 });
 
 app.on('window-all-closed', () => {

@@ -439,6 +439,93 @@ window.api.onClusterStatus((s) => {
   setDot(clusterDot, s.connected);
 });
 
+// --- Auto-update UI ---
+(function setupUpdateBanner() {
+  const banner = document.getElementById('update-banner');
+  const message = document.getElementById('update-message');
+  const progress = document.getElementById('update-progress');
+  const progressFill = document.getElementById('update-progress-fill');
+  const progressText = document.getElementById('update-progress-text');
+  const downloadBtn = document.getElementById('update-download-btn');
+  const releaseLink = document.getElementById('update-release-link');
+  const installBtn = document.getElementById('update-install-btn');
+  const dismissBtn = document.getElementById('update-dismiss-btn');
+
+  let isUpdaterActive = true; // assume installed build until told otherwise
+
+  window.api.onUpdaterActive((active) => {
+    isUpdaterActive = active;
+  });
+
+  window.api.onUpdateAvailable((info) => {
+    banner.style.display = 'flex';
+    progress.style.display = 'none';
+    installBtn.style.display = 'none';
+    message.textContent = `Update available: v${info.version}`;
+
+    if (isUpdaterActive) {
+      downloadBtn.style.display = '';
+      releaseLink.style.display = 'none';
+    } else {
+      // Portable build — link to release page
+      downloadBtn.style.display = 'none';
+      releaseLink.style.display = '';
+      releaseLink.href = info.url || '#';
+      releaseLink.textContent = 'View Release';
+    }
+  });
+
+  window.api.onDownloadProgress((data) => {
+    downloadBtn.style.display = 'none';
+    progress.style.display = 'flex';
+    progressFill.style.width = data.percent + '%';
+    progressText.textContent = data.percent + '%';
+  });
+
+  window.api.onUpdateDownloaded(() => {
+    progress.style.display = 'none';
+    downloadBtn.style.display = 'none';
+    installBtn.style.display = '';
+    message.textContent = 'Update downloaded — restart to install';
+  });
+
+  window.api.onUpdateUpToDate(() => {
+    // Brief flash, then hide
+    banner.style.display = 'flex';
+    message.textContent = 'CW-CAT is up to date';
+    downloadBtn.style.display = 'none';
+    releaseLink.style.display = 'none';
+    installBtn.style.display = 'none';
+    progress.style.display = 'none';
+    setTimeout(() => { banner.style.display = 'none'; }, 3000);
+  });
+
+  window.api.onUpdateError((msg) => {
+    banner.style.display = 'flex';
+    progress.style.display = 'none';
+    downloadBtn.style.display = 'none';
+    releaseLink.style.display = 'none';
+    installBtn.style.display = 'none';
+    message.textContent = 'Update error: ' + msg;
+  });
+
+  downloadBtn.addEventListener('click', () => {
+    window.api.startDownload();
+    downloadBtn.style.display = 'none';
+    progress.style.display = 'flex';
+    progressFill.style.width = '0%';
+    progressText.textContent = '0%';
+  });
+
+  installBtn.addEventListener('click', () => {
+    window.api.installUpdate();
+  });
+
+  dismissBtn.addEventListener('click', () => {
+    banner.style.display = 'none';
+  });
+})();
+
 // --- Initialization ---
 async function init() {
   settings = await window.api.getSettings();

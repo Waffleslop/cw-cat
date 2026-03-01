@@ -19,4 +19,15 @@ contextBridge.exposeInMainWorld('api', {
   onSliceUpdate: (cb) => ipcRenderer.on('slice-update', (_e, data) => cb(data)),
   onRbnStatus: (cb) => ipcRenderer.on('rbn-status', (_e, s) => cb(s)),
   onClusterStatus: (cb) => ipcRenderer.on('cluster-status', (_e, s) => cb(s)),
+
+  // Auto-update
+  onUpdateAvailable: (cb) => ipcRenderer.on('update-available', (_e, d) => cb(d)),
+  onUpdaterActive: (cb) => ipcRenderer.on('updater-active', (_e, active) => cb(active)),
+  onDownloadProgress: (cb) => ipcRenderer.on('update-download-progress', (_e, d) => cb(d)),
+  onUpdateError: (cb) => ipcRenderer.on('update-error', (_e, msg) => cb(msg)),
+  onUpdateDownloaded: (cb) => ipcRenderer.on('update-downloaded', () => cb()),
+  onUpdateUpToDate: (cb) => ipcRenderer.on('update-up-to-date', () => cb()),
+  startDownload: () => ipcRenderer.send('start-download'),
+  installUpdate: () => ipcRenderer.send('install-update'),
+  checkForUpdates: () => ipcRenderer.send('check-for-updates'),
 });
