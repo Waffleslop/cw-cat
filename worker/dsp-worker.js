@@ -36,7 +36,7 @@ let callsignExtractor = null;
 const channelState = new Map();
 const MAX_CHANNELS = 20; // Limit channels — each runs a channelizer (CPU cost)
 const CHANNEL_TIMEOUT_S = 30; // Remove channels inactive for this many seconds
-const MIN_SNR_FOR_CHANNEL = 15; // Create channels sooner to catch CQ calls
+const MIN_SNR_FOR_CHANNEL = 12; // Lowered from 15 for better weak-signal sensitivity
 const MIN_PERSISTENCE_FOR_CHANNEL = 8; // Create channels faster (8 frames ≈ 85ms)
 const CHANNEL_OUTPUT_RATE = 800; // Channelizer output rate in Hz
 const CHANNEL_BANDWIDTH = 150;   // Channel bandwidth in Hz
@@ -91,7 +91,10 @@ function processIqBlock(iqData) {
       const elems = dec._elements.length;
       const onHist = dec._onDurations.slice(-5).map(d => (d * 1000).toFixed(0)).join(',');
       const offHist = dec._offDurations.slice(-5).map(d => (d * 1000).toFixed(0)).join(',');
-      console.log(`[DSP]   ch ${key}Hz: text="${state.text.slice(-40)}" DR=${dr} ditMs=${(dec._ditDuration*1000).toFixed(0)} wpm=${dec._wpm.toFixed(0)} ratio=${dec._dahDitRatio.toFixed(1)} thresh=${(Math.sqrt(dec._dahDitRatio)).toFixed(2)}x locked=${dec._speedLocked} on=[${onHist}] off=[${offHist}]`);
+      const gaps = dec._getGapThresholds();
+      const cg = (gaps.charGap * 1000).toFixed(0);
+      const wg = (gaps.wordGap * 1000).toFixed(0);
+      console.log(`[DSP]   ch ${key}Hz: text="${state.text.slice(-40)}" DR=${dr} ditMs=${(dec._ditDuration*1000).toFixed(0)} wpm=${dec._wpm.toFixed(0)} cg=${cg}ms wg=${wg}ms locked=${dec._speedLocked} on=[${onHist}] off=[${offHist}]`);
     }
     diagBlockCount = 0;
     diagSpectrumSent = 0;
@@ -161,7 +164,7 @@ function processIqBlock(iqData) {
     // Check if too close to an existing channel (within 500 Hz)
     let tooClose = false;
     for (const existingKey of channelState.keys()) {
-      if (Math.abs(key - existingKey) < 500) {
+      if (Math.abs(key - existingKey) < 300) {
         tooClose = true;
         // Update existing channel's activity if signal is near it
         const existing = channelState.get(existingKey);
@@ -208,6 +211,7 @@ function processIqBlock(iqData) {
           lastDecoderText: '', // Last seen decoder.text (for change detection)
           lastActive: currentTime,    // Updated by signal detector — keeps channel alive
           lastKeyTime: currentTime,   // Updated only on actual transitions — controls decoder reset
+          createdTime: currentTime,   // When this channel was first created
           freqOffset: sig.freqOffset,
           snr: sig.snr,
         });
@@ -218,9 +222,28 @@ function processIqBlock(iqData) {
     }
   }
 
-  // Remove timed-out channels
+  // Remove timed-out channels and garbage channels
   for (const [key, state] of channelState) {
-    if (currentTime - state.lastActive > CHANNEL_TIMEOUT_S) {
+    const age = currentTime - state.lastActive;
+    let shouldRemove = false;
+
+    if (age > CHANNEL_TIMEOUT_S) {
+      shouldRemove = true;
+    } else if (currentTime - (state.createdTime || 0) > 15) {
+      // After 15 seconds, evict channels producing only garbage
+      // Garbage = mostly E, I, S, T, ¿, and spaces (single-element chars from noise)
+      const text = state.text.replace(/[\s¿]/g, '');
+      if (text.length > 0) {
+        const garbageChars = text.replace(/[EIST]/g, '').length;
+        const garbageRatio = 1 - (garbageChars / text.length);
+        if (garbageRatio > 0.85 && text.length > 10) {
+          // More than 85% single-element characters — this is noise, not CW
+          shouldRemove = true;
+        }
+      }
+    }
+
+    if (shouldRemove) {
       // Flush any pending decode
       state.decoder.flush();
       const finalText = state.decoder.text;
@@ -250,8 +273,10 @@ function processIqBlock(iqData) {
     const transitions = state.envelope.process(magnitudes, state.channel.outputRate);
 
     // Check dynamic range — need sufficient contrast for CW detection
+    // Use lower threshold once speed is locked (we know it's real CW)
     const dr = state.envelope._peakMag / (state.envelope._noiseMag + 1e-10);
-    if (dr < 6.0) continue;
+    const drThreshold = state.decoder._speedLocked ? 4.0 : 6.0;
+    if (dr < drThreshold) continue;
 
     // Feed transitions to Morse decoder
     diagTransitions += transitions.length;
@@ -311,9 +336,9 @@ function processIqBlock(iqData) {
       // Reset decoder for next transmission (preserves speed estimate)
       state.decoder.reset();
       state.lastDecoderText = '';
-      // Trim old text to prevent unbounded growth, keep last 100 chars
-      if (state.text.length > 200) {
-        state.text = state.text.slice(-100);
+      // Trim old text to prevent unbounded growth, keep last 150 chars
+      if (state.text.length > 300) {
+        state.text = state.text.slice(-150);
       }
     }
   }
@@ -323,12 +348,16 @@ function processIqBlock(iqData) {
 
 function tryExtractCallsign(key, state) {
   // Use recent text window to avoid re-matching old patterns
-  const text = state.text.length > 80 ? state.text.slice(-80) : state.text;
+  // 120 chars keeps CQ/DE context visible longer as text scrolls
+  const text = state.text.length > 120 ? state.text.slice(-120) : state.text;
   // Require at least 8 characters — "CQ W1AW" is 7, "DE W1AW" is 7
   if (text.length < 8) return;
 
   // Require recognizable CW context words to avoid false positives from gibberish
-  if (!/(?:CQ|DE|TEST)/.test(text)) return;
+  // Also accept garbled variants: NST/EST/IST for TEST, concatenated DEXXX
+  // Skip this check if we'll use the high-confidence path (3+ callsign occurrences)
+  const hasContext = /(?:CQ|DE|[NEIT]ST)/.test(text);
+  if (!hasContext && state.snr < 20) return; // Low-SNR needs context words
 
   const results = callsignExtractor.extractNew(text);
   for (const { callsign, type } of results) {
