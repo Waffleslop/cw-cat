@@ -315,3 +315,162 @@ function runMultiSignalTest() {
 }
 
 runMultiSignalTest();
+
+// ============ Hard scenarios ============
+function runHardTests() {
+  console.log('\n=== Hard Real-World Scenarios ===\n');
+
+  // Test 1: Adjacent signals 300Hz apart
+  console.log('--- Test: Adjacent signals 300Hz apart ---');
+  {
+    const dur = 25;
+    const numSamples = Math.ceil(dur * SAMPLE_RATE);
+    const iq = new Float32Array(numSamples * 2);
+    for (let i = 0; i < numSamples * 2; i++) iq[i] = gaussianNoise() * 1.0;
+
+    // Strong signal at 5000 Hz
+    const text1 = 'CQ CQ CQ DE W1AW W1AW K CQ CQ CQ DE W1AW W1AW K CQ CQ CQ DE W1AW W1AW K';
+    const iq1 = generateCwIq(5000, dur, text1, 20, 25);
+    // Weaker signal at 5300 Hz (only 300Hz away)
+    const text2 = 'CQ CQ DE K4BAI K4BAI K CQ CQ DE K4BAI K4BAI K CQ CQ DE K4BAI K4BAI K';
+    const iq2 = generateCwIq(5300, dur, text2, 15, 20);
+    for (let i = 0; i < Math.min(iq1.length, iq.length); i++) iq[i] += iq1[i] + iq2[i];
+
+    const r1 = runPipeline(iq, 5000);
+    const r2 = runPipeline(iq, 5300);
+    const s1 = r1.spots.some(s => s.callsign === 'W1AW');
+    const s2 = r2.spots.some(s => s.callsign === 'K4BAI');
+    console.log(`  5000Hz W1AW (25dB): ${s1 ? 'SPOTTED' : 'MISSED'} — "${r1.text.slice(-40).trim()}"`);
+    console.log(`  5300Hz K4BAI(20dB): ${s2 ? 'SPOTTED' : 'MISSED'} — "${r2.text.slice(-40).trim()}"`);
+  }
+
+  // Test 2: QSB fading — realistic: only the signal fades, noise stays constant
+  console.log('\n--- Test: QSB fading (1Hz fade rate, -10dB depth) ---');
+  {
+    const dur = 25;
+    const numSamples = Math.ceil(dur * SAMPLE_RATE);
+    const text = 'CQ CQ CQ DE KE9BHN KE9BHN K CQ CQ CQ DE KE9BHN KE9BHN K CQ CQ CQ DE KE9BHN KE9BHN K';
+    const iq = new Float32Array(numSamples * 2);
+
+    // Generate noise separately
+    for (let i = 0; i < numSamples * 2; i++) {
+      iq[i] = gaussianNoise() * 1.0;
+    }
+
+    // Generate signal with QSB envelope (only signal amplitude varies)
+    const signalAmplitude = Math.pow(10, 20 / 20); // 20dB SNR at peak
+    const ditDuration = 1.2 / 18;
+    const dahDuration = ditDuration * 3;
+    const intraGap = ditDuration;
+    const charGap = ditDuration * 3;
+    const wordGap = ditDuration * 7;
+
+    const cwEnv = new Float32Array(numSamples);
+    let pos = Math.floor(0.3 * SAMPLE_RATE);
+    for (const char of text) {
+      if (pos >= numSamples) break;
+      if (char === ' ') { pos += Math.floor(wordGap * SAMPLE_RATE); continue; }
+      const morse = REV_MORSE[char];
+      if (!morse) continue;
+      for (let i = 0; i < morse.length; i++) {
+        if (pos >= numSamples) break;
+        const elemDur = morse[i] === '.' ? ditDuration : dahDuration;
+        const elemSamples = Math.floor(elemDur * SAMPLE_RATE);
+        for (let s = 0; s < elemSamples && pos + s < numSamples; s++) cwEnv[pos + s] = 1.0;
+        pos += elemSamples;
+        if (i < morse.length - 1) pos += Math.floor(intraGap * SAMPLE_RATE);
+      }
+      pos += Math.floor(charGap * SAMPLE_RATE);
+    }
+
+    // Add signal with 1Hz QSB (-10dB depth, signal only)
+    for (let i = 0; i < numSamples; i++) {
+      const t = i / SAMPLE_RATE;
+      const qsb = 0.5 + 0.5 * Math.cos(2 * Math.PI * 1.0 * t); // 0 to 1
+      const qsbFactor = Math.pow(10, (-10 * (1 - qsb)) / 20); // -10dB to 0dB
+      const amp = cwEnv[i] * signalAmplitude * qsbFactor;
+      const phase = 2 * Math.PI * 4000 * t;
+      iq[2*i] += amp * Math.cos(phase);
+      iq[2*i+1] += amp * Math.sin(phase);
+    }
+
+    const result = runPipeline(iq, 4000);
+    const spotted = result.spots.some(s => s.callsign === 'KE9BHN');
+    console.log(`  4000Hz KE9BHN (20dB + 1Hz QSB -10dB): ${spotted ? 'SPOTTED' : 'MISSED'} — "${result.text.slice(-60).trim()}"`);
+  }
+
+  // Test 3: Sloppy timing (±20% element variation)
+  console.log('\n--- Test: Sloppy operator (±20% timing jitter) ---');
+  {
+    const text = 'CQ CQ DE W8FN W8FN K CQ CQ DE W8FN W8FN K CQ CQ DE W8FN W8FN K';
+    const wpm = 20;
+    const ditBase = 1.2 / wpm;
+    const dur = text.length * 0.25 + 4;
+    const numSamples = Math.ceil(dur * SAMPLE_RATE);
+    const iq = new Float32Array(numSamples * 2);
+    const envelope = new Float32Array(numSamples);
+
+    // Build envelope with jittered timing
+    let pos = Math.floor(0.2 * SAMPLE_RATE);
+    for (const char of text) {
+      if (pos >= numSamples) break;
+      if (char === ' ') { pos += Math.floor((ditBase * 7 * (0.8 + Math.random() * 0.4)) * SAMPLE_RATE); continue; }
+      const morse = REV_MORSE[char];
+      if (!morse) continue;
+      for (let i = 0; i < morse.length; i++) {
+        if (pos >= numSamples) break;
+        // Apply ±20% jitter to each element
+        const jitter = 0.8 + Math.random() * 0.4;
+        const elemDur = (morse[i] === '.' ? ditBase : ditBase * 3) * jitter;
+        const elemSamples = Math.floor(elemDur * SAMPLE_RATE);
+        for (let s = 0; s < elemSamples && pos + s < numSamples; s++) {
+          envelope[pos + s] = 1.0;
+        }
+        pos += elemSamples;
+        if (i < morse.length - 1) {
+          pos += Math.floor(ditBase * (0.8 + Math.random() * 0.4) * SAMPLE_RATE);
+        }
+      }
+      pos += Math.floor(ditBase * 3 * (0.8 + Math.random() * 0.4) * SAMPLE_RATE);
+    }
+
+    const signalAmp = Math.pow(10, 20 / 20);
+    for (let i = 0; i < numSamples; i++) {
+      const t = i / SAMPLE_RATE;
+      const phase = 2 * Math.PI * 6000 * t;
+      iq[2*i] = envelope[i] * signalAmp * Math.cos(phase) + gaussianNoise();
+      iq[2*i+1] = envelope[i] * signalAmp * Math.sin(phase) + gaussianNoise();
+    }
+
+    const result = runPipeline(iq, 6000);
+    const spotted = result.spots.some(s => s.callsign === 'W8FN');
+    console.log(`  6000Hz W8FN (20dB, ±20% jitter): ${spotted ? 'SPOTTED' : 'MISSED'} — "${result.text.slice(-50).trim()}"`);
+  }
+
+  // Test 4: Impulsive noise (QRN)
+  console.log('\n--- Test: QRN (impulsive atmospheric noise) ---');
+  {
+    const dur = 15;
+    const text = 'CQ CQ DE N3CZ N3CZ K CQ CQ DE N3CZ N3CZ K';
+    const iq = generateCwIq(7000, dur, text, 25, 20);
+
+    // Add impulsive noise: random bursts of 0.5-5ms, amplitude 10x noise
+    const numSamples = Math.floor(iq.length / 2);
+    const burstRate = 10; // bursts per second
+    for (let b = 0; b < dur * burstRate; b++) {
+      const start = Math.floor(Math.random() * numSamples);
+      const burstLen = Math.floor((0.0005 + Math.random() * 0.005) * SAMPLE_RATE);
+      const burstAmp = 5 + Math.random() * 15;
+      for (let i = start; i < Math.min(start + burstLen, numSamples); i++) {
+        iq[2*i] += gaussianNoise() * burstAmp;
+        iq[2*i+1] += gaussianNoise() * burstAmp;
+      }
+    }
+
+    const result = runPipeline(iq, 7000);
+    const spotted = result.spots.some(s => s.callsign === 'N3CZ');
+    console.log(`  7000Hz N3CZ (20dB + QRN 10/s): ${spotted ? 'SPOTTED' : 'MISSED'} — "${result.text.slice(-50).trim()}"`);
+  }
+}
+
+runHardTests();

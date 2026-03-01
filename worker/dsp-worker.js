@@ -40,7 +40,7 @@ const CHANNEL_TIMEOUT_S = 30; // Remove channels inactive for this many seconds
 const MIN_SNR_FOR_CHANNEL = 10; // Lowered from 12 for better weak-signal sensitivity
 const MIN_PERSISTENCE_FOR_CHANNEL = 6; // Faster channel creation (6 frames ≈ 65ms, was 8)
 const CHANNEL_OUTPUT_RATE = 800; // Channelizer output rate in Hz
-const CHANNEL_BANDWIDTH = 150;   // Channel bandwidth in Hz
+const CHANNEL_BANDWIDTH = 120;   // Channel bandwidth in Hz (narrowed from 150 for better adjacent rejection)
 
 // Spectrum throttle: send at ~15fps to renderer
 let lastSpectrumTime = 0;
