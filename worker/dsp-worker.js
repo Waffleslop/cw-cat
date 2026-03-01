@@ -1,0 +1,404 @@
+// DSP Worker thread — runs the full signal processing pipeline
+// Receives IQ blocks from main thread, outputs spectrum, detected signals, and decoded spots
+const { parentPort } = require('worker_threads');
+
+// Catch unhandled errors to prevent silent worker crashes
+process.on('uncaughtException', (err) => {
+  console.error('[DSP] Uncaught exception:', err.message, err.stack);
+});
+process.on('unhandledRejection', (err) => {
+  console.error('[DSP] Unhandled rejection:', err);
+});
+const { FftProcessor } = require('../lib/dsp/fft');
+const { SignalDetector } = require('../lib/dsp/signal-detector');
+const { CwChannel } = require('../lib/dsp/channelizer');
+const { CwEnvelopeDetector } = require('../lib/dsp/goertzel');
+const { MorseDecoder } = require('../lib/dsp/morse-decoder');
+const { CallsignExtractor } = require('../lib/dsp/callsign-extractor');
+const { loadCtyDat, resolveCallsign } = require('../lib/cty');
+const { isInCwSubband } = require('../lib/bands');
+
+// --- Configuration ---
+let sampleRate = 192000;
+let fftSize = 4096;
+let threshold = 6;
+let minWpm = 8;
+let maxWpm = 60;
+let ctyDb = null;
+let centerFreqMHz = 0; // Slice center frequency in MHz
+
+// --- DSP objects ---
+let fftProcessor = null;
+let signalDetector = null;
+let callsignExtractor = null;
+
+// Per-channel state: Map of freqOffset → { channel, envelope, decoder, text, lastActive }
+const channelState = new Map();
+const MAX_CHANNELS = 20; // Limit channels — each runs a channelizer (CPU cost)
+const CHANNEL_TIMEOUT_S = 30; // Remove channels inactive for this many seconds
+const MIN_SNR_FOR_CHANNEL = 15; // Create channels sooner to catch CQ calls
+const MIN_PERSISTENCE_FOR_CHANNEL = 8; // Create channels faster (8 frames ≈ 85ms)
+const CHANNEL_OUTPUT_RATE = 800; // Channelizer output rate in Hz
+const CHANNEL_BANDWIDTH = 150;   // Channel bandwidth in Hz
+
+// Spectrum throttle: send at ~15fps to renderer
+let lastSpectrumTime = 0;
+const SPECTRUM_INTERVAL_MS = 66; // ~15fps
+
+// Signal list throttle
+let lastSignalTime = 0;
+const SIGNAL_INTERVAL_MS = 500;
+
+// Time tracking
+let totalSamplesProcessed = 0;
+
+// Diagnostics
+let diagBlockCount = 0;
+let diagSpectrumSent = 0;
+let diagSignalsFound = 0;
+let diagTransitions = 0;
+let diagLastLog = Date.now();
+const DIAG_INTERVAL_MS = 5000;
+
+function initialize() {
+  fftProcessor = new FftProcessor(fftSize);
+  signalDetector = new SignalDetector(fftSize, sampleRate, threshold);
+  callsignExtractor = new CallsignExtractor(ctyDb, resolveCallsign);
+
+  parentPort.postMessage({ type: 'ready' });
+}
+
+function processIqBlock(iqData) {
+  const now = Date.now();
+  const currentTime = totalSamplesProcessed / sampleRate;
+  diagBlockCount++;
+
+  // Periodic diagnostics
+  if (now - diagLastLog >= DIAG_INTERVAL_MS) {
+    // Log IQ sample range and spectrum dB range
+    let iqMin = Infinity, iqMax = -Infinity;
+    for (let i = 0; i < Math.min(100, iqData.length); i++) {
+      if (iqData[i] < iqMin) iqMin = iqData[i];
+      if (iqData[i] > iqMax) iqMax = iqData[i];
+    }
+    console.log(`[DSP] blocks=${diagBlockCount}, spectrums=${diagSpectrumSent}, signals=${diagSignalsFound}, channels=${channelState.size}, threshold=${threshold}dB, transitions=${diagTransitions}`);
+    console.log(`[DSP] IQ sample range: ${iqMin.toExponential(3)} to ${iqMax.toExponential(3)}`);
+    // Log per-channel decode status
+    for (const [key, state] of channelState) {
+      const env = state.envelope;
+      const dr = (env._peakMag / (env._noiseMag + 1e-10)).toFixed(1);
+      const dec = state.decoder;
+      const elems = dec._elements.length;
+      const onHist = dec._onDurations.slice(-5).map(d => (d * 1000).toFixed(0)).join(',');
+      const offHist = dec._offDurations.slice(-5).map(d => (d * 1000).toFixed(0)).join(',');
+      console.log(`[DSP]   ch ${key}Hz: text="${state.text.slice(-40)}" DR=${dr} ditMs=${(dec._ditDuration*1000).toFixed(0)} wpm=${dec._wpm.toFixed(0)} ratio=${dec._dahDitRatio.toFixed(1)} thresh=${(Math.sqrt(dec._dahDitRatio)).toFixed(2)}x locked=${dec._speedLocked} on=[${onHist}] off=[${offHist}]`);
+    }
+    diagBlockCount = 0;
+    diagSpectrumSent = 0;
+    diagSignalsFound = 0;
+    diagTransitions = 0;
+    diagLastLog = now;
+  }
+
+  // Validate IQ block size matches FFT size
+  if (iqData.length !== fftSize * 2) {
+    if (diagBlockCount <= 3) {
+      console.log(`[DSP] WARNING: iq block length ${iqData.length} != expected ${fftSize * 2}`);
+    }
+    return;
+  }
+
+  // 1. FFT — compute spectrum
+  const spectrum = fftProcessor.process(iqData);
+
+  // Log spectrum dB range periodically
+  if (diagBlockCount === 1) {
+    let sMin = Infinity, sMax = -Infinity;
+    for (let i = 0; i < spectrum.length; i++) {
+      if (spectrum[i] > -200 && spectrum[i] < sMin) sMin = spectrum[i];
+      if (spectrum[i] > sMax) sMax = spectrum[i];
+    }
+    console.log(`[DSP] Spectrum dB range: ${sMin.toFixed(1)} to ${sMax.toFixed(1)} dB`);
+  }
+
+  // Send spectrum to renderer (throttled)
+  if (now - lastSpectrumTime >= SPECTRUM_INTERVAL_MS) {
+    lastSpectrumTime = now;
+    diagSpectrumSent++;
+    // Send a copy since the internal buffer is reused
+    parentPort.postMessage({
+      type: 'spectrum',
+      data: {
+        magnitudes: Array.from(spectrum),
+        fftSize,
+        sampleRate,
+        binWidth: sampleRate / fftSize,
+      },
+    });
+  }
+
+  // 2. Signal detection — find peaks
+  const signals = signalDetector.detect(spectrum);
+  diagSignalsFound += signals.length;
+
+  // Send signal list (throttled)
+  if (now - lastSignalTime >= SIGNAL_INTERVAL_MS) {
+    lastSignalTime = now;
+    parentPort.postMessage({
+      type: 'signals',
+      data: signals.map(s => ({
+        freqOffset: s.freqOffset,
+        magnitude: s.magnitude,
+        snr: s.snr,
+      })),
+    });
+  }
+
+  // 3. Manage channels — add new, remove stale
+  for (const sig of signals) {
+    const key = Math.round(sig.freqOffset);
+
+    // Check if too close to an existing channel (within 500 Hz)
+    let tooClose = false;
+    for (const existingKey of channelState.keys()) {
+      if (Math.abs(key - existingKey) < 500) {
+        tooClose = true;
+        // Update existing channel's activity if signal is near it
+        const existing = channelState.get(existingKey);
+        existing.lastActive = currentTime;
+        if (sig.snr > existing.snr) existing.snr = sig.snr;
+        break;
+      }
+    }
+
+    if (!tooClose && !channelState.has(key) && sig.snr >= MIN_SNR_FOR_CHANNEL) {
+      // Filter by CW sub-band — only create channels for signals in CW portions
+      if (centerFreqMHz > 0) {
+        const absFreqMHz = centerFreqMHz + sig.freqOffset / 1e6;
+        if (!isInCwSubband(absFreqMHz)) continue;
+      }
+
+      // Only create channels for signals with high persistence (well-established)
+      if (sig.persistence && sig.persistence >= MIN_PERSISTENCE_FOR_CHANNEL) {
+        // If at capacity, evict the weakest channel (lowest SNR with no decoded text)
+        if (channelState.size >= MAX_CHANNELS) {
+          let worstKey = null, worstSnr = Infinity;
+          for (const [ek, es] of channelState) {
+            // Prefer evicting channels with no useful text and low SNR
+            const hasText = es.text.length > 3;
+            const score = hasText ? es.snr + 100 : es.snr;
+            if (score < worstSnr) { worstSnr = score; worstKey = ek; }
+          }
+          if (worstKey !== null && worstSnr < sig.snr) {
+            channelState.delete(worstKey);
+          } else {
+            continue; // New signal isn't stronger than existing channels
+          }
+        }
+
+        // Create channelizer for this signal — extracts narrow band from wideband IQ
+        const cwChannel = new CwChannel(sig.freqOffset, sampleRate, CHANNEL_OUTPUT_RATE, CHANNEL_BANDWIDTH);
+        const absKHz = centerFreqMHz > 0 ? ((centerFreqMHz + sig.freqOffset / 1e6) * 1000).toFixed(1) : '?';
+        console.log(`[DSP] New channel: ${sig.freqOffset.toFixed(0)} Hz (${absKHz} kHz), SNR=${sig.snr.toFixed(1)}, outputRate=${cwChannel.outputRate}`);
+        channelState.set(key, {
+          channel: cwChannel,   // CwChannel — frequency shift + FIR + decimate
+          envelope: new CwEnvelopeDetector(cwChannel.outputRate),
+          decoder: new MorseDecoder(minWpm, maxWpm),
+          text: '',           // Full accumulated text across decoder resets
+          lastDecoderText: '', // Last seen decoder.text (for change detection)
+          lastActive: currentTime,    // Updated by signal detector — keeps channel alive
+          lastKeyTime: currentTime,   // Updated only on actual transitions — controls decoder reset
+          freqOffset: sig.freqOffset,
+          snr: sig.snr,
+        });
+      }
+    } else if (channelState.has(key)) {
+      channelState.get(key).lastActive = currentTime;
+      channelState.get(key).snr = sig.snr;
+    }
+  }
+
+  // Remove timed-out channels
+  for (const [key, state] of channelState) {
+    if (currentTime - state.lastActive > CHANNEL_TIMEOUT_S) {
+      // Flush any pending decode
+      state.decoder.flush();
+      const finalText = state.decoder.text;
+      if (finalText !== state.lastDecoderText) {
+        const newChars = finalText.startsWith(state.lastDecoderText)
+          ? finalText.slice(state.lastDecoderText.length)
+          : finalText;
+        state.text += newChars;
+      }
+      if (state.text.length > 3) {
+        tryExtractCallsign(key, state);
+      }
+      channelState.delete(key);
+    }
+  }
+
+  // 4. Per-channel processing: channelizer → envelope → Morse decoder
+  // The channelizer frequency-shifts, filters, and decimates the wideband IQ
+  // to produce a clean envelope at 800Hz — much better time resolution than
+  // the old 1-sample-per-FFT-block (~94Hz) approach
+  for (const [key, state] of channelState) {
+    // Run channelizer: produces ~17 magnitude samples per 4096-sample IQ block
+    const magnitudes = state.channel.process(iqData);
+    if (magnitudes.length === 0) continue;
+
+    // Feed magnitude samples to envelope detector
+    const transitions = state.envelope.process(magnitudes, state.channel.outputRate);
+
+    // Check dynamic range — need sufficient contrast for CW detection
+    const dr = state.envelope._peakMag / (state.envelope._noiseMag + 1e-10);
+    if (dr < 6.0) continue;
+
+    // Feed transitions to Morse decoder
+    diagTransitions += transitions.length;
+    if (transitions.length > 0) {
+      state.decoder.feedTransitions(transitions);
+      state.lastKeyTime = currentTime;
+
+      // Check for decoded text — only report if text has meaningful length
+      const decoderText = state.decoder.text;
+      if (decoderText !== state.lastDecoderText && decoderText.length >= 2) {
+        // Compute what's new since last check
+        const newChars = decoderText.startsWith(state.lastDecoderText)
+          ? decoderText.slice(state.lastDecoderText.length)
+          : decoderText;  // After decoder reset, all text is "new"
+
+        const prevFullText = state.text;
+        state.text += newChars;
+        state.lastDecoderText = decoderText;
+
+        // Send decode update to renderer (throttle per channel)
+        parentPort.postMessage({
+          type: 'decode',
+          data: {
+            freqOffset: state.freqOffset,
+            text: state.text,
+            wpm: state.decoder.wpm,
+            snr: state.snr,
+          },
+        });
+
+        // Try to extract callsign only on word boundaries (space added)
+        // This prevents premature extraction as callsign builds character by character
+        if (state.text.length > prevFullText.length && state.text.endsWith(' ')) {
+          tryExtractCallsign(key, state);
+        }
+      }
+    }
+
+    // Check for transmission timeout — use lastKeyTime (last actual keying) for decoder reset
+    const silenceSec = currentTime - state.lastKeyTime;
+    const timeoutSec = Math.max(state.decoder._ditDuration * 20, 5.0);
+    if (state.decoder._started && silenceSec > timeoutSec) {
+      state.decoder.flush();
+      // Append any final text from the decoder before resetting
+      const finalText = state.decoder.text;
+      if (finalText !== state.lastDecoderText) {
+        const newChars = finalText.startsWith(state.lastDecoderText)
+          ? finalText.slice(state.lastDecoderText.length)
+          : finalText;
+        state.text += newChars;
+      }
+      if (state.text.length > 3) {
+        tryExtractCallsign(key, state);
+      }
+      // Add a space separator between transmissions
+      state.text += ' ';
+      // Reset decoder for next transmission (preserves speed estimate)
+      state.decoder.reset();
+      state.lastDecoderText = '';
+      // Trim old text to prevent unbounded growth, keep last 100 chars
+      if (state.text.length > 200) {
+        state.text = state.text.slice(-100);
+      }
+    }
+  }
+
+  totalSamplesProcessed += iqData.length / 2; // iqData is interleaved I/Q
+}
+
+function tryExtractCallsign(key, state) {
+  // Use recent text window to avoid re-matching old patterns
+  const text = state.text.length > 80 ? state.text.slice(-80) : state.text;
+  // Require at least 8 characters — "CQ W1AW" is 7, "DE W1AW" is 7
+  if (text.length < 8) return;
+
+  // Require recognizable CW context words to avoid false positives from gibberish
+  if (!/(?:CQ|DE|TEST)/.test(text)) return;
+
+  const results = callsignExtractor.extractNew(text);
+  for (const { callsign, type } of results) {
+    console.log(`[DSP] SPOT FOUND: ${callsign} (${type}) @ ${state.freqOffset.toFixed(0)}Hz — "${text.slice(-40)}"`);
+    parentPort.postMessage({
+      type: 'spot',
+      data: {
+        callsign,
+        freqOffset: state.freqOffset,
+        snr: Math.round(state.snr || 0),
+        wpm: state.decoder.wpm,
+        type,
+        text,
+      },
+    });
+  }
+}
+
+// --- Message handler ---
+parentPort.on('message', (msg) => {
+  try {
+    switch (msg.type) {
+      case 'configure':
+        if (msg.sampleRate) sampleRate = msg.sampleRate;
+        if (msg.fftSize) fftSize = msg.fftSize;
+        if (msg.threshold) threshold = msg.threshold;
+        if (msg.minWpm) minWpm = msg.minWpm;
+        if (msg.maxWpm) maxWpm = msg.maxWpm;
+
+        // Load cty.dat if path provided and not yet loaded
+        if (msg.ctyDatPath && !ctyDb) {
+          try {
+            ctyDb = loadCtyDat(msg.ctyDatPath);
+            console.log(`[DSP] Loaded cty.dat: ${ctyDb.entities.length} entities`);
+          } catch (err) {
+            console.error('[DSP] Failed to load cty.dat:', err.message);
+          }
+        }
+
+        if (signalDetector) signalDetector.setThreshold(threshold);
+
+        // Reinitialize if FFT size or sample rate changed
+        if (!fftProcessor || fftProcessor.size !== fftSize) {
+          initialize();
+        }
+        break;
+
+      case 'iq-block': {
+        const iqData = new Float32Array(msg.block);
+        processIqBlock(iqData);
+        break;
+      }
+
+      case 'set-center-freq':
+        if (msg.centerMHz && msg.centerMHz !== centerFreqMHz) {
+          centerFreqMHz = msg.centerMHz;
+          console.log(`[DSP] Center frequency: ${centerFreqMHz.toFixed(6)} MHz`);
+          // Clear channels when frequency changes — they're no longer valid
+          channelState.clear();
+        }
+        break;
+
+      case 'stop':
+        channelState.clear();
+        break;
+    }
+  } catch (err) {
+    console.error('[DSP] Worker error:', err.message, err.stack);
+  }
+});
+
+// Initialize on startup
+initialize();

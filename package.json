@@ -1,0 +1,21 @@
+{
+  "name": "cw-cat",
+  "version": "0.1.0",
+  "description": "CW Skimmer for FlexRadio 6000 — decodes CW signals from DAX IQ and reports spots",
+  "author": {
+    "name": "Casey Stanton"
+  },
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder",
+    "dist:win": "electron-builder --win"
+  },
+  "dependencies": {
+    "electron": "^33.0.0",
+    "fft.js": "^4.0.4"
+  },
+  "devDependencies": {
+    "electron-builder": "^25.0.0"
+  }
+}

@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'">
+  <title>CW-CAT</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Header -->
+  <div class="header">
+    <div class="header-left">
+      <span class="app-title">CW-CAT</span>
+      <div class="status-item">
+        <span class="status-dot disconnected" id="radio-dot"></span>
+        <span id="radio-label">Radio</span>
+      </div>
+      <div class="status-item">
+        <span class="status-dot disconnected" id="rbn-dot"></span>
+        <span>RBN</span>
+      </div>
+      <div class="status-item">
+        <span class="status-dot disconnected" id="cluster-dot"></span>
+        <span>Cluster</span>
+      </div>
+      <div class="status-item">
+        <span class="status-dot disconnected" id="dsp-dot"></span>
+        <span>DSP</span>
+      </div>
+    </div>
+    <div class="header-right">
+      <span class="status-item" id="iq-info">IQ: --</span>
+      <span class="status-item" id="signals-count">Signals: 0</span>
+      <span class="utc-clock" id="utc-clock">00:00:00Z</span>
+      <button class="settings-btn" id="settings-btn" title="Settings">&#9881;</button>
+    </div>
+  </div>
+
+  <!-- Main content -->
+  <div class="main-content">
+    <!-- Spectrum / Waterfall -->
+    <div class="spectrum-panel">
+      <div class="spectrum-canvas-container">
+        <canvas id="spectrum-canvas"></canvas>
+        <canvas id="waterfall-canvas"></canvas>
+        <div class="spectrum-label" id="spectrum-label"></div>
+      </div>
+      <div class="freq-axis" id="freq-axis"></div>
+    </div>
+
+    <!-- Bottom: signals table + decoders -->
+    <div class="bottom-content">
+      <!-- Decoded signals table -->
+      <div class="signals-panel">
+        <div class="signals-header">
+          <h3>Decoded Spots</h3>
+          <span class="signals-stats" id="spot-stats">0 spots</span>
+        </div>
+        <div class="signals-table-container">
+          <table class="signals-table" id="spots-table">
+            <thead>
+              <tr>
+                <th>Freq (kHz)</th>
+                <th>Callsign</th>
+                <th>Entity</th>
+                <th>SNR</th>
+                <th>WPM</th>
+                <th>Type</th>
+                <th>Text</th>
+                <th>Time</th>
+              </tr>
+            </thead>
+            <tbody id="spots-body"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Active decoders sidebar -->
+      <div class="decoders-panel">
+        <div class="decoders-header">Active Decoders</div>
+        <div class="decoders-list" id="decoders-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Status bar -->
+  <div class="status-bar">
+    <div class="status-bar-left">
+      <span id="status-text">Idle</span>
+    </div>
+    <div class="status-bar-right">
+      <span id="spot-total">Total: 0</span>
+    </div>
+  </div>
+
+  <!-- Settings overlay -->
+  <div class="settings-overlay" id="settings-overlay">
+    <div class="settings-panel">
+      <h2>Settings</h2>
+
+      <div class="settings-group">
+        <h3>FlexRadio Connection</h3>
+        <div class="settings-row">
+          <label>Radio IP Address</label>
+          <input type="text" id="set-radio-host" placeholder="127.0.0.1">
+        </div>
+        <div class="settings-row">
+          <label>DAX IQ Channel</label>
+          <select id="set-dax-channel">
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+          </select>
+        </div>
+        <div class="settings-row">
+          <label>Sample Rate</label>
+          <select id="set-sample-rate">
+            <option value="48000">48 kHz</option>
+            <option value="96000">96 kHz</option>
+            <option value="192000">192 kHz</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="settings-group">
+        <h3>Operator</h3>
+        <div class="settings-row">
+          <label>My Callsign</label>
+          <input type="text" id="set-callsign" placeholder="W1AW">
+        </div>
+        <div class="settings-row">
+          <label>Grid Square</label>
+          <input type="text" id="set-grid" placeholder="FN31">
+        </div>
+      </div>
+
+      <div class="settings-group">
+        <h3>Spot Outputs</h3>
+        <div class="settings-row">
+          <label>RBN Enabled</label>
+          <input type="checkbox" id="set-rbn-enabled">
+        </div>
+        <div class="settings-row">
+          <label>RBN Host</label>
+          <input type="text" id="set-rbn-host" placeholder="arcluster.reversebeacon.net">
+        </div>
+        <div class="settings-row">
+          <label>RBN Port</label>
+          <input type="number" id="set-rbn-port" placeholder="7000">
+        </div>
+        <div class="settings-row">
+          <label>DX Cluster Enabled</label>
+          <input type="checkbox" id="set-cluster-enabled">
+        </div>
+        <div class="settings-row">
+          <label>DX Cluster Host</label>
+          <input type="text" id="set-cluster-host" placeholder="w3lpl.net">
+        </div>
+        <div class="settings-row">
+          <label>DX Cluster Port</label>
+          <input type="number" id="set-cluster-port" placeholder="7373">
+        </div>
+        <div class="settings-row">
+          <label>SmartSDR Spots</label>
+          <input type="checkbox" id="set-sdr-spots">
+        </div>
+      </div>
+
+      <div class="settings-group">
+        <h3>Detection</h3>
+        <div class="settings-row">
+          <label>Threshold (dB)</label>
+          <input type="number" id="set-threshold" min="1" max="30" step="1">
+        </div>
+        <div class="settings-row">
+          <label>Min WPM</label>
+          <input type="number" id="set-min-wpm" min="5" max="60" step="1">
+        </div>
+        <div class="settings-row">
+          <label>Max WPM</label>
+          <input type="number" id="set-max-wpm" min="5" max="60" step="1">
+        </div>
+      </div>
+
+      <div class="settings-buttons">
+        <button class="btn" id="settings-cancel">Cancel</button>
+        <button class="btn btn-primary" id="settings-save">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
