@@ -37,7 +37,7 @@ let callsignExtractor = null;
 const channelState = new Map();
 const MAX_CHANNELS = 50; // Increased from 20 for busy bands (40m evening, contest)
 const CHANNEL_TIMEOUT_S = 30; // Remove channels inactive for this many seconds
-const MIN_SNR_FOR_CHANNEL = 10; // Lowered from 12 for better weak-signal sensitivity
+const MIN_SNR_FOR_CHANNEL = 12; // Raised back from 10 — too many noise channels at 10
 const MIN_PERSISTENCE_FOR_CHANNEL = 6; // Faster channel creation (6 frames ≈ 65ms, was 8)
 const CHANNEL_OUTPUT_RATE = 800; // Channelizer output rate in Hz
 const CHANNEL_BANDWIDTH = 120;   // Channel bandwidth in Hz (narrowed from 150 for better adjacent rejection)
@@ -83,18 +83,18 @@ function processIqBlock(iqData) {
     recentlyEvicted.clear();
   }
 
+  const now = Date.now();
+  const currentTime = totalSamplesProcessed / sampleRate;
+  diagBlockCount++;
+
   // Periodically clean stale eviction records (every ~5s)
-  if (diagBlockCount === 0) {
+  if (diagBlockCount === 1) {
     for (const [freq, evTime] of recentlyEvicted) {
       if (currentTime - evTime > EVICTION_COOLDOWN_S * 2) {
         recentlyEvicted.delete(freq);
       }
     }
   }
-
-  const now = Date.now();
-  const currentTime = totalSamplesProcessed / sampleRate;
-  diagBlockCount++;
 
   // Periodic diagnostics
   if (now - diagLastLog >= DIAG_INTERVAL_MS) {
@@ -209,14 +209,15 @@ function processIqBlock(iqData) {
 
     if (!tooClose && !channelState.has(key) && sig.snr >= MIN_SNR_FOR_CHANNEL) {
       // Check eviction cooldown — prevent churn (delete+recreate cycles)
-      const evictedAt = recentlyEvicted.get(key);
-      if (evictedAt && (currentTime - evictedAt) < EVICTION_COOLDOWN_S) {
-        // Also check nearby frequencies (within 100 Hz) for cooldown
-        let inCooldown = true;
-        // Allow recreation if SNR is significantly higher (>10dB) — new strong signal
-        if (sig.snr > 25) inCooldown = false;
-        if (inCooldown) continue;
+      // Use proximity check since signal detector gives slightly different offsets each frame
+      let inCooldown = false;
+      for (const [evFreq, evTime] of recentlyEvicted) {
+        if ((currentTime - evTime) < EVICTION_COOLDOWN_S && Math.abs(key - evFreq) < 300) {
+          inCooldown = true;
+          break;
+        }
       }
+      if (inCooldown) continue;
 
       // Filter by CW sub-band — only create channels for signals in CW portions
       if (centerFreqMHz > 0) {
@@ -289,17 +290,28 @@ function processIqBlock(iqData) {
 
     if (age > effectiveTimeout) {
       shouldRemove = true;
-    } else if (currentTime - (state.createdTime || 0) > 10) {
-      // After 10 seconds (was 15), evict channels producing only garbage
-      // Garbage = mostly E, I, S, T, ¿ (single-element chars from noise/false speed lock)
+    } else if (currentTime - (state.createdTime || 0) > 8) {
+      // After 8 seconds, evict channels producing only garbage
       const text = state.text.replace(/[\s]/g, '');
       if (text.length > 0) {
-        // Count chars that are NOT garbage indicators (E/I/S/T/¿)
-        const meaningfulChars = text.replace(/[EIST¿]/g, '').length;
+        // Count chars that are NOT garbage indicators (E/I/S/T/H/¿/5 — short Morse elements)
+        // H (....),  5 (.....) are also common noise products
+        const meaningfulChars = text.replace(/[EIST¿H5]/g, '').length;
         const garbageRatio = 1 - (meaningfulChars / text.length);
-        if (garbageRatio > 0.80 && text.length > 8) {
-          // More than 80% garbage characters — this is noise, not CW
+        if (garbageRatio > 0.70 && text.length > 6) {
+          // More than 70% garbage characters — this is noise, not CW
           shouldRemove = true;
+        }
+
+        // Monotony check: if >60% of text is one single character, it's a carrier/non-CW
+        // (e.g., "TTTTTTTTT" from a steady carrier decoded as all dahs)
+        if (text.length > 10) {
+          const charCounts = {};
+          for (const ch of text) charCounts[ch] = (charCounts[ch] || 0) + 1;
+          const maxCount = Math.max(...Object.values(charCounts));
+          if (maxCount / text.length > 0.60) {
+            shouldRemove = true;
+          }
         }
       }
     }
