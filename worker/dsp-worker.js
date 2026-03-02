@@ -432,9 +432,11 @@ function tryExtractCallsign(key, state) {
 
   // Require recognizable CW context words to avoid false positives from gibberish
   // Also accept garbled variants: NST/EST/IST for TEST, concatenated DEXXX
-  // Skip this check if we'll use the high-confidence path (3+ callsign occurrences)
   const hasContext = /(?:CQ|DE|[NEIT]ST)/.test(text);
-  if (!hasContext && state.snr < 20) return; // Low-SNR needs context words
+  // Also check if text has a repeated callsign-like pattern (self-evident context)
+  // This catches "WA2VUY WA2VUY WA2VUY" — repeated callsigns ARE context
+  const hasRepeatedCall = !hasContext && /\b([A-Z0-9]{1,3}[0-9][A-Z]{1,4})\b.*\b\1\b/.test(text);
+  if (!hasContext && !hasRepeatedCall && state.snr < 20) return;
 
   const results = callsignExtractor.extractNew(text, state.snr);
   for (const { callsign, type } of results) {
