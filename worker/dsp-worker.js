@@ -42,6 +42,12 @@ const MIN_PERSISTENCE_FOR_CHANNEL = 6; // Faster channel creation (6 frames ≈ 
 const CHANNEL_OUTPUT_RATE = 800; // Channelizer output rate in Hz
 const CHANNEL_BANDWIDTH = 120;   // Channel bandwidth in Hz (narrowed from 150 for better adjacent rejection)
 
+// Recently-evicted frequencies: prevents churn where a channel is evicted
+// then immediately re-created at the same frequency in a loop
+// Map of freqOffset → eviction time (seconds)
+const recentlyEvicted = new Map();
+const EVICTION_COOLDOWN_S = 15; // Don't recreate a channel within 15s of eviction
+
 // Spectrum throttle: send at ~15fps to renderer
 let lastSpectrumTime = 0;
 const SPECTRUM_INTERVAL_MS = 66; // ~15fps
@@ -74,6 +80,16 @@ function processIqBlock(iqData) {
   if (pendingFreqChange) {
     pendingFreqChange = false;
     channelState.clear();
+    recentlyEvicted.clear();
+  }
+
+  // Periodically clean stale eviction records (every ~5s)
+  if (diagBlockCount === 0) {
+    for (const [freq, evTime] of recentlyEvicted) {
+      if (currentTime - evTime > EVICTION_COOLDOWN_S * 2) {
+        recentlyEvicted.delete(freq);
+      }
+    }
   }
 
   const now = Date.now();
@@ -192,6 +208,16 @@ function processIqBlock(iqData) {
     }
 
     if (!tooClose && !channelState.has(key) && sig.snr >= MIN_SNR_FOR_CHANNEL) {
+      // Check eviction cooldown — prevent churn (delete+recreate cycles)
+      const evictedAt = recentlyEvicted.get(key);
+      if (evictedAt && (currentTime - evictedAt) < EVICTION_COOLDOWN_S) {
+        // Also check nearby frequencies (within 100 Hz) for cooldown
+        let inCooldown = true;
+        // Allow recreation if SNR is significantly higher (>10dB) — new strong signal
+        if (sig.snr > 25) inCooldown = false;
+        if (inCooldown) continue;
+      }
+
       // Filter by CW sub-band — only create channels for signals in CW portions
       if (centerFreqMHz > 0) {
         const absFreqMHz = centerFreqMHz + sig.freqOffset / 1e6;
@@ -200,19 +226,29 @@ function processIqBlock(iqData) {
 
       // Only create channels for signals with high persistence (well-established)
       if (sig.persistence && sig.persistence >= MIN_PERSISTENCE_FOR_CHANNEL) {
-        // If at capacity, evict the weakest channel (lowest SNR with no decoded text)
+        // If at capacity, evict the lowest-quality channel
         if (channelState.size >= MAX_CHANNELS) {
-          let worstKey = null, worstSnr = Infinity;
+          let worstKey = null, worstScore = Infinity;
           for (const [ek, es] of channelState) {
-            // Prefer evicting channels with no useful text and low SNR
-            const hasText = es.text.length > 3;
-            const score = hasText ? es.snr + 100 : es.snr;
-            if (score < worstSnr) { worstSnr = score; worstKey = ek; }
+            // Score channels by quality: text diversity + SNR + age
+            const textClean = es.text.replace(/[\s¿EIST]/g, '');
+            const hasQualityText = textClean.length >= 4;
+            const isLocked = es.decoder._speedLocked;
+            // Garbage channels (locked but only E/I/S/T) get lowest priority
+            const totalText = es.text.replace(/[\s]/g, '');
+            const isGarbage = totalText.length > 8 &&
+              (totalText.replace(/[EIST¿]/g, '').length / totalText.length) < 0.2;
+            let score = es.snr;
+            if (hasQualityText) score += 200;   // Strong boost for real text
+            else if (isLocked && !isGarbage) score += 50; // Mild boost for locked non-garbage
+            else if (isGarbage) score -= 50;    // Penalty for garbage channels
+            if (score < worstScore) { worstScore = score; worstKey = ek; }
           }
-          if (worstKey !== null && worstSnr < sig.snr) {
+          if (worstKey !== null && worstScore < sig.snr + 50) {
+            recentlyEvicted.set(worstKey, currentTime);
             channelState.delete(worstKey);
           } else {
-            continue; // New signal isn't stronger than existing channels
+            continue; // New signal isn't worth evicting any existing channel
           }
         }
 
@@ -244,23 +280,25 @@ function processIqBlock(iqData) {
     const age = currentTime - state.lastActive;
     let shouldRemove = false;
 
-    // QSB-resistant timeout: channels with decoded text or locked speed get
-    // a longer grace period, since they're more likely to be real signals
-    // that will come back after a fade
-    const hasUsefulContent = state.text.length > 5 || state.decoder._speedLocked;
+    // QSB-resistant timeout: channels with quality text get a longer grace period
+    // Just having speed locked is NOT enough — false locks on noise happen frequently
+    // Require actual meaningful decoded text (non-garbage) to qualify
+    const textNoGarbage = state.text.replace(/[\s¿EIST]/g, '');
+    const hasUsefulContent = textNoGarbage.length >= 4;
     const effectiveTimeout = hasUsefulContent ? CHANNEL_TIMEOUT_S * 2 : CHANNEL_TIMEOUT_S;
 
     if (age > effectiveTimeout) {
       shouldRemove = true;
-    } else if (currentTime - (state.createdTime || 0) > 15) {
-      // After 15 seconds, evict channels producing only garbage
-      // Garbage = mostly E, I, S, T, ¿, and spaces (single-element chars from noise)
-      const text = state.text.replace(/[\s¿]/g, '');
+    } else if (currentTime - (state.createdTime || 0) > 10) {
+      // After 10 seconds (was 15), evict channels producing only garbage
+      // Garbage = mostly E, I, S, T, ¿ (single-element chars from noise/false speed lock)
+      const text = state.text.replace(/[\s]/g, '');
       if (text.length > 0) {
-        const garbageChars = text.replace(/[EIST]/g, '').length;
-        const garbageRatio = 1 - (garbageChars / text.length);
-        if (garbageRatio > 0.85 && text.length > 10) {
-          // More than 85% single-element characters — this is noise, not CW
+        // Count chars that are NOT garbage indicators (E/I/S/T/¿)
+        const meaningfulChars = text.replace(/[EIST¿]/g, '').length;
+        const garbageRatio = 1 - (meaningfulChars / text.length);
+        if (garbageRatio > 0.80 && text.length > 8) {
+          // More than 80% garbage characters — this is noise, not CW
           shouldRemove = true;
         }
       }
@@ -279,6 +317,8 @@ function processIqBlock(iqData) {
       if (state.text.length > 3) {
         tryExtractCallsign(key, state);
       }
+      // Record eviction to prevent immediate re-creation (churn)
+      recentlyEvicted.set(key, currentTime);
       channelState.delete(key);
     }
   }
