@@ -8,21 +8,6 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <!-- Update banner -->
-  <div id="update-banner" class="update-banner" style="display:none;">
-    <span id="update-message"></span>
-    <div id="update-progress" style="display:none;">
-      <div class="update-progress-bar"><div class="update-progress-fill" id="update-progress-fill"></div></div>
-      <span id="update-progress-text">0%</span>
-    </div>
-    <div id="update-actions">
-      <button id="update-download-btn" style="display:none;">Download</button>
-      <a id="update-release-link" href="#" style="display:none;" target="_blank">View Release</a>
-      <button id="update-install-btn" style="display:none;">Restart to Update</button>
-      <button id="update-dismiss-btn" class="update-dismiss">&times;</button>
-    </div>
-  </div>
-
   <!-- Titlebar -->
   <div class="titlebar">
     <div class="titlebar-left">
@@ -48,12 +33,10 @@
       <span class="utc-clock" id="utc-clock">00:00:00Z</span>
     </div>
     <div class="titlebar-right">
-      <label class="theme-toggle" title="Toggle light/dark mode">
-        <span class="theme-toggle-label">Light</span>
-        <div class="switch">
-          <input type="checkbox" id="theme-toggle">
-          <span class="switch-slider"></span>
-        </div>
+      <label class="switch-label compact" title="Toggle light/dark mode">
+        <span>Dark</span>
+        <div class="switch"><input type="checkbox" id="theme-toggle"><span class="switch-slider"></span></div>
+        <span>Light</span>
       </label>
       <button class="settings-btn" id="settings-btn" title="Settings">&#9881;</button>
       <div class="titlebar-controls">
@@ -61,6 +44,45 @@
         <button class="titlebar-btn" id="tb-max" title="Maximize">&#x25A1;</button>
         <button class="titlebar-btn titlebar-close" id="tb-close" title="Close">&#x2715;</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Update banner -->
+  <div id="update-banner" class="update-banner" style="display:none;">
+    <span id="update-message"></span>
+    <div id="update-progress" style="display:none;">
+      <div class="update-progress-bar"><div class="update-progress-fill" id="update-progress-fill"></div></div>
+      <span id="update-progress-text">0%</span>
+    </div>
+    <div id="update-actions">
+      <button id="update-download-btn" style="display:none;">Download</button>
+      <a id="update-release-link" href="#" style="display:none;" target="_blank">View Release</a>
+      <button id="update-install-btn" style="display:none;">Restart to Update</button>
+      <button id="update-dismiss-btn" class="update-dismiss">&times;</button>
+    </div>
+  </div>
+
+  <!-- Telemetry notice banner -->
+  <div id="telemetry-banner" class="telemetry-banner" style="display:none;">
+    <div class="telemetry-banner-icon">i</div>
+    <div class="telemetry-banner-body">
+      <div class="telemetry-banner-title">Beta Telemetry</div>
+      <div class="telemetry-banner-text">
+        CW CAT sends data every 10 minutes to help improve decoding. Here's exactly what we collect:
+      </div>
+      <div class="telemetry-banner-details">
+        <div class="telemetry-detail-item"><strong>Your callsign</strong> &mdash; identifies your station</div>
+        <div class="telemetry-detail-item"><strong>Decoded spots</strong> &mdash; callsign, frequency, SNR, WPM, decoded CW text</div>
+        <div class="telemetry-detail-item"><strong>Channel stats</strong> &mdash; how many signals were detected, evicted, peak count</div>
+        <div class="telemetry-detail-item"><strong>Packet stats</strong> &mdash; IQ packets received and dropped</div>
+        <div class="telemetry-detail-item"><strong>App version &amp; OS</strong> &mdash; for compatibility tracking</div>
+      </div>
+      <div class="telemetry-banner-text" style="margin-top:6px;">
+        <strong>Never collected:</strong> IQ audio, radio settings, passwords, or IP addresses.
+      </div>
+    </div>
+    <div class="telemetry-banner-actions">
+      <button id="telemetry-ok-btn" class="telemetry-btn-primary">Got It</button>
     </div>
   </div>
 
@@ -133,6 +155,10 @@
           <input type="text" id="set-radio-host" placeholder="127.0.0.1">
         </div>
         <div class="settings-row">
+          <label>Radio Port</label>
+          <input type="number" id="set-radio-port" placeholder="4992" min="1" max="65535">
+        </div>
+        <div class="settings-row">
           <label>DAX IQ Channel</label>
           <select id="set-dax-channel">
             <option value="1">1</option>
@@ -190,9 +216,10 @@
           <input type="number" id="set-cluster-port" placeholder="7373">
         </div>
         <div class="settings-row">
-          <label>SmartSDR Spots</label>
+          <label>Panadapter Spots</label>
           <input type="checkbox" id="set-sdr-spots">
         </div>
+        <div class="settings-hint">Show decoded callsigns on the SmartSDR panadapter.</div>
       </div>
 
       <div class="settings-group">
@@ -222,6 +249,18 @@
       <div class="settings-buttons">
         <button class="btn" id="settings-cancel">Cancel</button>
         <button class="btn btn-primary" id="settings-save">Save</button>
+      </div>
+
+      <div class="settings-footer">
+        <div class="settings-version" id="settings-version">v0.2.0-beta.1 &mdash; Casey Stanton, K3SBP</div>
+        <div class="settings-coffee"><a href="#" id="coffee-link">Buy Me a Coffee</a></div>
+        <div class="settings-links">
+          <a href="#" id="discord-link">Discord</a>
+          <span class="footer-dot">&middot;</span>
+          <a href="#" id="issues-link">Report Bug / Feature Request</a>
+          <span class="footer-dot">&middot;</span>
+          <a href="#" id="check-update-link">Check for Updates</a>
+        </div>
       </div>
     </div>
   </div>

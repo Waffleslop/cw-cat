@@ -262,9 +262,9 @@ function processIqBlock(iqData) {
           }
           if (worstKey !== null && worstScore < sig.snr + 50) {
             recentlyEvicted.set(worstKey, currentTime);
-            const evictedState = channelState.get(worstKey);
             if (USE_STFT_CHANNELIZER) stftChannelizer.removeChannel(worstKey);
             channelState.delete(worstKey);
+            parentPort.postMessage({ type: 'channel-evicted' });
           } else {
             continue; // New signal isn't worth evicting any existing channel
           }
@@ -280,6 +280,7 @@ function processIqBlock(iqData) {
         }
         const absKHz = centerFreqMHz > 0 ? ((centerFreqMHz + sig.freqOffset / 1e6) * 1000).toFixed(1) : '?';
         console.log(`[DSP] New channel: ${sig.freqOffset.toFixed(0)} Hz (${absKHz} kHz), SNR=${sig.snr.toFixed(1)}, outputRate=${outputRate}${USE_STFT_CHANNELIZER ? ' [STFT]' : ''}`);
+        parentPort.postMessage({ type: 'channel-created' });
         channelState.set(key, {
           channel: cwChannel,   // CwChannel (legacy) or null (STFT mode)
           envelope: new CwEnvelopeDetector(outputRate),
@@ -356,7 +357,13 @@ function processIqBlock(iqData) {
       recentlyEvicted.set(key, currentTime);
       if (USE_STFT_CHANNELIZER) stftChannelizer.removeChannel(key);
       channelState.delete(key);
+      parentPort.postMessage({ type: 'channel-evicted' });
     }
+  }
+
+  // Report channel count for telemetry peak tracking
+  if (channelState.size > 0 && diagBlockCount === 1) {
+    parentPort.postMessage({ type: 'channel-count', count: channelState.size });
   }
 
   // 4. Per-channel processing: channelizer → envelope → Morse decoder

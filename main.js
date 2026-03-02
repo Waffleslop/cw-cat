@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { Worker } = require('worker_threads');
@@ -17,6 +17,7 @@ const { VitaReceiver } = require('./lib/vita49');
 const { IqRingBuffer } = require('./lib/iq-buffer');
 const { loadCtyDat, resolveCallsign } = require('./lib/cty');
 const { freqToBand } = require('./lib/bands');
+const { TelemetryClient } = require('./lib/telemetry');
 
 // --- cty.dat database ---
 let ctyDb = null;
@@ -26,6 +27,7 @@ const SETTINGS_PATH = path.join(app.getPath('userData'), 'settings.json');
 
 const DEFAULT_SETTINGS = {
   radioHost: '127.0.0.1',
+  radioPort: 4992,
   daxIqChannel: 1,
   sampleRate: 192000,
   myCallsign: '',
@@ -64,6 +66,8 @@ let dxCluster = null;
 let spotReporter = null;
 let vitaReceiver = null;
 let iqBuffer = null;
+let telemetry = null;
+let vitaDiagTimer = null;
 let dspWorker = null;
 let dspWorkerReady = false;
 
@@ -130,6 +134,18 @@ function startDspWorker() {
         // Callsign extracted — submit as spot
         handleDecodedSpot(msg.data);
         break;
+
+      case 'channel-created':
+        if (telemetry) telemetry.recordChannelCreated();
+        break;
+
+      case 'channel-evicted':
+        if (telemetry) telemetry.recordChannelEvicted();
+        break;
+
+      case 'channel-count':
+        if (telemetry) telemetry.updateChannelPeak(msg.count);
+        break;
     }
   });
 
@@ -167,6 +183,10 @@ function sendToDspWorker(msg, transferList) {
 // --- VITA-49 / IQ data pipeline ---
 
 function stopIqPipeline() {
+  if (vitaDiagTimer) {
+    clearInterval(vitaDiagTimer);
+    vitaDiagTimer = null;
+  }
   if (vitaReceiver) {
     vitaReceiver.stop();
     vitaReceiver = null;
@@ -210,6 +230,9 @@ function handleDecodedSpot(data) {
 
   console.log(`[SPOT] ${spot.callsign} @ ${freqKhz.toFixed(1)} kHz (${spot.band || '?'}) ${spot.entity} — ${spot.comment} — "${(spot.text || '').slice(-40)}"`);
 
+  // Record to telemetry
+  if (telemetry) telemetry.recordSpot(spot);
+
   // Submit to all outputs via SpotReporter
   if (spotReporter) {
     spotReporter.submit(spot);
@@ -248,7 +271,6 @@ function connectRadio() {
   let vitaPacketCount = 0;
   let vitaIqSamples = 0;
   let vitaBlocksSent = 0;
-  let vitaDiagTimer = null;
 
   vitaReceiver.on('iq-data', (samples) => {
     vitaPacketCount++;
@@ -282,6 +304,7 @@ function connectRadio() {
     if (vitaPacketCount > 0) {
       const stats = vitaReceiver.getStats();
       console.log(`[VITA-49] pkts=${stats.received}, iq_samples=${vitaIqSamples}, blocks_to_dsp=${vitaBlocksSent}, dropped=${stats.dropped}`);
+      if (telemetry) telemetry.updatePacketStats(stats.received, stats.dropped);
       vitaPacketCount = 0;
       vitaIqSamples = 0;
       vitaBlocksSent = 0;
@@ -354,7 +377,7 @@ function connectRadio() {
       }
     });
 
-    smartSdr.connect(settings.radioHost);
+    smartSdr.connect(settings.radioHost, settings.radioPort);
   });
 
   vitaReceiver.start();
@@ -441,6 +464,7 @@ ipcMain.handle('save-settings', (_e, newSettings) => {
 
   // Reconnect if radio host changed
   const radioChanged = oldSettings.radioHost !== settings.radioHost ||
+    oldSettings.radioPort !== settings.radioPort ||
     oldSettings.daxIqChannel !== settings.daxIqChannel ||
     oldSettings.sampleRate !== settings.sampleRate;
 
@@ -460,6 +484,9 @@ ipcMain.handle('save-settings', (_e, newSettings) => {
     disconnectOutputs();
     connectOutputs();
   }
+
+  // Update telemetry spotter callsign
+  if (telemetry) telemetry.setSpotterCall(settings.myCallsign);
 
   // Update DSP settings
   sendToDspWorker({
@@ -498,6 +525,7 @@ ipcMain.handle('get-status', () => {
 
 autoUpdater.autoDownload = false;
 autoUpdater.autoInstallOnAppQuit = false;
+autoUpdater.allowPrerelease = true;
 autoUpdater.logger = {
   info: (...args) => console.log('[updater]', ...args),
   warn: (...args) => console.warn('[updater]', ...args),
@@ -540,6 +568,9 @@ autoUpdater.on('error', (err) => {
   }
 });
 
+// Open external URLs
+ipcMain.on('open-external', (_e, url) => { shell.openExternal(url); });
+
 // Window control IPC
 ipcMain.on('win-minimize', () => { if (win) win.minimize(); });
 ipcMain.on('win-maximize', () => {
@@ -558,7 +589,7 @@ function checkForUpdatesManual() {
   const currentVersion = require('./package.json').version;
   const options = {
     hostname: 'api.github.com',
-    path: '/repos/Waffleslop/cw-cat/releases/latest',
+    path: '/repos/Waffleslop/cw-cat/releases',
     headers: { 'User-Agent': 'CW_CAT/' + currentVersion },
     timeout: 10000,
   };
@@ -567,12 +598,20 @@ function checkForUpdatesManual() {
     res.on('data', (chunk) => { body += chunk; });
     res.on('end', () => {
       try {
-        const data = JSON.parse(body);
-        const latestTag = (data.tag_name || '').replace(/^v/, '');
-        if (latestTag && isNewerVersion(currentVersion, latestTag)) {
-          const releaseUrl = data.html_url || `https://github.com/Waffleslop/cw-cat/releases/tag/${data.tag_name}`;
+        const releases = JSON.parse(body);
+        if (!Array.isArray(releases) || releases.length === 0) return;
+        // Find the newest release (including pre-releases)
+        let newest = null;
+        for (const rel of releases) {
+          const tag = (rel.tag_name || '').replace(/^v/, '');
+          if (!tag) continue;
+          if (!newest || isNewerVersion(newest.tag, tag)) {
+            newest = { tag, url: rel.html_url, name: rel.name || '' };
+          }
+        }
+        if (newest && isNewerVersion(currentVersion, newest.tag)) {
           if (win && !win.isDestroyed()) {
-            win.webContents.send('update-available', { version: latestTag, url: releaseUrl, headline: data.name || '' });
+            win.webContents.send('update-available', { version: newest.tag, url: newest.url, headline: newest.name });
           }
         } else if (win && !win.isDestroyed()) {
           win.webContents.send('update-up-to-date');
@@ -621,6 +660,15 @@ app.whenReady().then(() => {
 
   settings = loadSettings();
 
+  // Start telemetry
+  telemetry = new TelemetryClient({
+    settingsPath: SETTINGS_PATH,
+    version: require('./package.json').version,
+    getUserData: () => app.getPath('userData'),
+  });
+  telemetry.setSpotterCall(settings.myCallsign);
+  telemetry.start();
+
   // Start DSP worker
   startDspWorker();
 
@@ -647,6 +695,7 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
+  if (telemetry) telemetry.stop();
   stopDspWorker();
   disconnectRadio();
   disconnectOutputs();

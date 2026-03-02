@@ -362,6 +362,7 @@ async function loadSettingsUi() {
   if (!settings) settings = {};
 
   document.getElementById('set-radio-host').value = settings.radioHost || '127.0.0.1';
+  document.getElementById('set-radio-port').value = settings.radioPort || 4992;
   document.getElementById('set-dax-channel').value = settings.daxIqChannel || 1;
   document.getElementById('set-sample-rate').value = settings.sampleRate || 192000;
   document.getElementById('set-callsign').value = settings.myCallsign || '';
@@ -381,7 +382,10 @@ async function loadSettingsUi() {
 
 async function saveSettingsUi() {
   const newSettings = {
+    // Preserve non-UI keys (betaId, telemetryNoticeSeen, etc.)
+    ...settings,
     radioHost: document.getElementById('set-radio-host').value.trim(),
+    radioPort: parseInt(document.getElementById('set-radio-port').value) || 4992,
     daxIqChannel: parseInt(document.getElementById('set-dax-channel').value),
     sampleRate: parseInt(document.getElementById('set-sample-rate').value),
     myCallsign: document.getElementById('set-callsign').value.trim().toUpperCase(),
@@ -440,6 +444,25 @@ document.getElementById('theme-toggle').addEventListener('change', async (e) => 
   await window.api.saveSettings(settings);
 });
 
+// --- Settings footer links ---
+document.getElementById('coffee-link').addEventListener('click', (e) => {
+  e.preventDefault();
+  window.api.openExternal('https://buymeacoffee.com/potacat');
+});
+document.getElementById('discord-link').addEventListener('click', (e) => {
+  e.preventDefault();
+  window.api.openExternal('https://discord.gg/JjdKSshej');
+});
+document.getElementById('issues-link').addEventListener('click', (e) => {
+  e.preventDefault();
+  window.api.openExternal('https://discord.gg/JjdKSshej');
+});
+document.getElementById('check-update-link').addEventListener('click', (e) => {
+  e.preventDefault();
+  window.api.checkForUpdates();
+  settingsOverlay.classList.remove('open');
+});
+
 // --- Helpers ---
 function escapeHtml(str) {
   const div = document.createElement('div');
@@ -475,9 +498,23 @@ window.api.onDecode((data) => {
     text: data.text,
     wpm: data.wpm,
     snr: data.snr,
+    lastUpdate: Date.now(),
   });
   updateDecoders();
 });
+
+// Prune stale decoders every 10 seconds (channels evicted in worker won't send further updates)
+setInterval(() => {
+  const cutoff = Date.now() - 60000;
+  let pruned = false;
+  for (const [key, info] of activeDecoders) {
+    if (info.lastUpdate < cutoff) {
+      activeDecoders.delete(key);
+      pruned = true;
+    }
+  }
+  if (pruned) updateDecoders();
+}, 10000);
 
 window.api.onNewSpot((spot) => {
   addSpotRow(spot);
@@ -578,6 +615,20 @@ window.api.onClusterStatus((s) => {
   });
 })();
 
+// --- Telemetry notice banner ---
+(function setupTelemetryBanner() {
+  const banner = document.getElementById('telemetry-banner');
+  const okBtn = document.getElementById('telemetry-ok-btn');
+
+  okBtn.addEventListener('click', async () => {
+    banner.style.display = 'none';
+    const s = await window.api.getSettings();
+    s.telemetryNoticeSeen = true;
+    await window.api.saveSettings(s);
+    settings = s;
+  });
+})();
+
 // --- Titlebar controls ---
 document.getElementById('tb-min').addEventListener('click', () => window.api.minimize());
 document.getElementById('tb-max').addEventListener('click', () => window.api.maximize());
@@ -593,6 +644,11 @@ async function init() {
 
   const status = await window.api.getStatus();
   if (status) updateStatus(status);
+
+  // Show telemetry notice banner on first launch
+  if (!settings.telemetryNoticeSeen) {
+    document.getElementById('telemetry-banner').style.display = 'flex';
+  }
 }
 
 init();

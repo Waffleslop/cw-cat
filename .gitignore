@@ -1,4 +1,5 @@
 node_modules/
-NUL
 *.log
 .claude/
+dist/
+*.exe
