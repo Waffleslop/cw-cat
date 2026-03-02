@@ -212,7 +212,7 @@ function processIqBlock(iqData) {
           // Smooth the frequency update to avoid jitter
           const newFreq = existing.freqOffset * 0.8 + sig.freqOffset * 0.2;
           if (USE_STFT_CHANNELIZER) {
-            stftChannelizer.setChannelFreq(existing.freqOffset, newFreq);
+            stftChannelizer.updateChannelFreq(existingKey, newFreq);
           } else {
             existing.channel.setFreqOffset(newFreq);
           }
@@ -263,7 +263,7 @@ function processIqBlock(iqData) {
           if (worstKey !== null && worstScore < sig.snr + 50) {
             recentlyEvicted.set(worstKey, currentTime);
             const evictedState = channelState.get(worstKey);
-            if (USE_STFT_CHANNELIZER && evictedState) stftChannelizer.removeChannel(evictedState.freqOffset);
+            if (USE_STFT_CHANNELIZER) stftChannelizer.removeChannel(worstKey);
             channelState.delete(worstKey);
           } else {
             continue; // New signal isn't worth evicting any existing channel
@@ -354,7 +354,7 @@ function processIqBlock(iqData) {
       }
       // Record eviction to prevent immediate re-creation (churn)
       recentlyEvicted.set(key, currentTime);
-      if (USE_STFT_CHANNELIZER) stftChannelizer.removeChannel(state.freqOffset);
+      if (USE_STFT_CHANNELIZER) stftChannelizer.removeChannel(key);
       channelState.delete(key);
     }
   }
