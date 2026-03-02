@@ -35,7 +35,7 @@ let callsignExtractor = null;
 
 // Per-channel state: Map of freqOffset → { channel, envelope, decoder, text, lastActive }
 const channelState = new Map();
-const MAX_CHANNELS = 50; // Increased from 20 for busy bands (40m evening, contest)
+const MAX_CHANNELS = 75; // Increased from 50 — garbage eviction keeps noise channels low
 const CHANNEL_TIMEOUT_S = 30; // Remove channels inactive for this many seconds
 const MIN_SNR_FOR_CHANNEL = 12; // Raised back from 10 — too many noise channels at 10
 const MIN_PERSISTENCE_FOR_CHANNEL = 6; // Faster channel creation (6 frames ≈ 65ms, was 8)
