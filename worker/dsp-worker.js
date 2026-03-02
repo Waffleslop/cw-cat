@@ -467,7 +467,8 @@ function tryExtractCallsign(key, state) {
 
   // Require recognizable CW context words to avoid false positives from gibberish
   // Also accept garbled variants: NST/EST/IST for TEST, concatenated DEXXX
-  const hasContext = /(?:CQ|DE|[NEIT]ST)/.test(text);
+  // TU and 73 are QSO sign-off context words (word-bounded to avoid false matches)
+  const hasContext = /(?:CQ|DE|[NEIT]ST|\bTU\b|\b73\b)/.test(text);
   // Also check if text has a repeated callsign-like pattern (self-evident context)
   // This catches "WA2VUY WA2VUY WA2VUY" — repeated callsigns ARE context
   const hasRepeatedCall = !hasContext && /\b([A-Z0-9]{1,3}[0-9][A-Z]{1,4})\b.*\b\1\b/.test(text);
