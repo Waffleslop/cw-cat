@@ -12,6 +12,7 @@ process.on('unhandledRejection', (err) => {
 const { FftProcessor } = require('../lib/dsp/fft');
 const { SignalDetector } = require('../lib/dsp/signal-detector');
 const { CwChannel } = require('../lib/dsp/channelizer');
+const { StftChannelizer } = require('../lib/dsp/stft-channelizer');
 const { CwEnvelopeDetector } = require('../lib/dsp/goertzel');
 const { MorseDecoder } = require('../lib/dsp/morse-decoder');
 const { CallsignExtractor } = require('../lib/dsp/callsign-extractor');
@@ -28,10 +29,14 @@ let ctyDb = null;
 let centerFreqMHz = 0; // Slice center frequency in MHz
 let pendingFreqChange = false; // Defer channel clearing to next processIqBlock()
 
+// --- STFT channelizer toggle ---
+const USE_STFT_CHANNELIZER = true; // true = shared STFT (fast), false = per-channel NCO+FIR (legacy)
+
 // --- DSP objects ---
 let fftProcessor = null;
 let signalDetector = null;
 let callsignExtractor = null;
+let stftChannelizer = null;
 
 // Per-channel state: Map of freqOffset → { channel, envelope, decoder, text, lastActive }
 const channelState = new Map();
@@ -72,6 +77,11 @@ function initialize() {
   signalDetector = new SignalDetector(fftSize, sampleRate, threshold);
   callsignExtractor = new CallsignExtractor(ctyDb, resolveCallsign);
 
+  if (USE_STFT_CHANNELIZER) {
+    stftChannelizer = new StftChannelizer(sampleRate, CHANNEL_OUTPUT_RATE);
+    console.log(`[DSP] STFT channelizer: fftSize=${stftChannelizer._fftSize}, hop=${stftChannelizer._hopSize}, binWidth=${stftChannelizer.binWidth.toFixed(1)}Hz, outputRate=${stftChannelizer.outputRate}Hz`);
+  }
+
   parentPort.postMessage({ type: 'ready' });
 }
 
@@ -81,6 +91,7 @@ function processIqBlock(iqData) {
     pendingFreqChange = false;
     channelState.clear();
     recentlyEvicted.clear();
+    if (USE_STFT_CHANNELIZER) stftChannelizer.clear();
   }
 
   const now = Date.now();
@@ -194,13 +205,17 @@ function processIqBlock(iqData) {
         existing.lastActive = currentTime;
         if (sig.snr > existing.snr) existing.snr = sig.snr;
 
-        // Frequency drift tracking: if signal moved >20Hz but <150Hz, update NCO
+        // Frequency drift tracking: if signal moved >20Hz but <150Hz, update channel
         // This keeps the channelizer centered on the actual signal as it drifts
         const actualDelta = sig.freqOffset - existing.freqOffset;
         if (Math.abs(actualDelta) > 20 && Math.abs(actualDelta) < 150) {
           // Smooth the frequency update to avoid jitter
           const newFreq = existing.freqOffset * 0.8 + sig.freqOffset * 0.2;
-          existing.channel.setFreqOffset(newFreq);
+          if (USE_STFT_CHANNELIZER) {
+            stftChannelizer.setChannelFreq(existing.freqOffset, newFreq);
+          } else {
+            existing.channel.setFreqOffset(newFreq);
+          }
           existing.freqOffset = newFreq;
         }
         break;
@@ -247,19 +262,27 @@ function processIqBlock(iqData) {
           }
           if (worstKey !== null && worstScore < sig.snr + 50) {
             recentlyEvicted.set(worstKey, currentTime);
+            const evictedState = channelState.get(worstKey);
+            if (USE_STFT_CHANNELIZER && evictedState) stftChannelizer.removeChannel(evictedState.freqOffset);
             channelState.delete(worstKey);
           } else {
             continue; // New signal isn't worth evicting any existing channel
           }
         }
 
-        // Create channelizer for this signal — extracts narrow band from wideband IQ
-        const cwChannel = new CwChannel(sig.freqOffset, sampleRate, CHANNEL_OUTPUT_RATE, CHANNEL_BANDWIDTH);
+        // Create channel — STFT mode registers a bin, legacy mode creates NCO+FIR
+        const outputRate = USE_STFT_CHANNELIZER ? stftChannelizer.outputRate : CHANNEL_OUTPUT_RATE;
+        let cwChannel = null;
+        if (USE_STFT_CHANNELIZER) {
+          stftChannelizer.addChannel(sig.freqOffset);
+        } else {
+          cwChannel = new CwChannel(sig.freqOffset, sampleRate, CHANNEL_OUTPUT_RATE, CHANNEL_BANDWIDTH);
+        }
         const absKHz = centerFreqMHz > 0 ? ((centerFreqMHz + sig.freqOffset / 1e6) * 1000).toFixed(1) : '?';
-        console.log(`[DSP] New channel: ${sig.freqOffset.toFixed(0)} Hz (${absKHz} kHz), SNR=${sig.snr.toFixed(1)}, outputRate=${cwChannel.outputRate}`);
+        console.log(`[DSP] New channel: ${sig.freqOffset.toFixed(0)} Hz (${absKHz} kHz), SNR=${sig.snr.toFixed(1)}, outputRate=${outputRate}${USE_STFT_CHANNELIZER ? ' [STFT]' : ''}`);
         channelState.set(key, {
-          channel: cwChannel,   // CwChannel — frequency shift + FIR + decimate
-          envelope: new CwEnvelopeDetector(cwChannel.outputRate),
+          channel: cwChannel,   // CwChannel (legacy) or null (STFT mode)
+          envelope: new CwEnvelopeDetector(outputRate),
           decoder: new MorseDecoder(minWpm, maxWpm),
           text: '',           // Full accumulated text across decoder resets
           lastDecoderText: '', // Last seen decoder.text (for change detection)
@@ -331,21 +354,33 @@ function processIqBlock(iqData) {
       }
       // Record eviction to prevent immediate re-creation (churn)
       recentlyEvicted.set(key, currentTime);
+      if (USE_STFT_CHANNELIZER) stftChannelizer.removeChannel(state.freqOffset);
       channelState.delete(key);
     }
   }
 
   // 4. Per-channel processing: channelizer → envelope → Morse decoder
-  // The channelizer frequency-shifts, filters, and decimates the wideband IQ
-  // to produce a clean envelope at 800Hz — much better time resolution than
-  // the old 1-sample-per-FFT-block (~94Hz) approach
+  // STFT mode: one shared FFT produces all channels at once (~36x faster)
+  // Legacy mode: per-channel NCO+FIR decimation
+  let stftResults = null;
+  if (USE_STFT_CHANNELIZER && channelState.size > 0) {
+    stftResults = stftChannelizer.processBlock(iqData);
+  }
+
   for (const [key, state] of channelState) {
-    // Run channelizer: produces ~17 magnitude samples per 4096-sample IQ block
-    const magnitudes = state.channel.process(iqData);
-    if (magnitudes.length === 0) continue;
+    // Get channel magnitudes — from STFT bulk result or legacy per-channel processing
+    let magnitudes;
+    if (USE_STFT_CHANNELIZER) {
+      magnitudes = stftResults ? stftResults.get(key) : null;
+      if (!magnitudes || magnitudes.length === 0) continue;
+    } else {
+      magnitudes = state.channel.process(iqData);
+      if (magnitudes.length === 0) continue;
+    }
 
     // Feed magnitude samples to envelope detector
-    const transitions = state.envelope.process(magnitudes, state.channel.outputRate);
+    const outputRate = USE_STFT_CHANNELIZER ? stftChannelizer.outputRate : state.channel.outputRate;
+    const transitions = state.envelope.process(magnitudes, outputRate);
 
     // Check dynamic range — need sufficient contrast for CW detection
     // Graduated threshold: strict before speed lock, lenient after
@@ -501,6 +536,7 @@ parentPort.on('message', (msg) => {
 
       case 'stop':
         channelState.clear();
+        if (USE_STFT_CHANNELIZER) stftChannelizer.clear();
         break;
     }
   } catch (err) {
