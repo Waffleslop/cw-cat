@@ -42,6 +42,7 @@ const DEFAULT_SETTINGS = {
   detectionThreshold: 6,
   minWpm: 8,
   maxWpm: 60,
+  decodeMode: 'skimmer',
 };
 
 function loadSettings() {
@@ -265,6 +266,9 @@ function connectRadio() {
     maxWpm: settings.maxWpm || 60,
     ctyDatPath: path.join(__dirname, 'assets', 'cty.dat'),
   });
+
+  // Send persisted decode mode to worker
+  sendToDspWorker({ type: 'set-mode', mode: settings.decodeMode || 'skimmer' });
 
   vitaReceiver = new VitaReceiver(7791);
 
@@ -508,6 +512,14 @@ ipcMain.on('connect-radio', () => {
 ipcMain.on('disconnect-radio', () => {
   disconnectRadio();
   sendStatus();
+});
+
+ipcMain.on('set-decode-mode', (_e, mode) => {
+  if (settings) {
+    settings.decodeMode = mode;
+    saveSettings(settings);
+  }
+  sendToDspWorker({ type: 'set-mode', mode });
 });
 
 ipcMain.handle('get-status', () => {

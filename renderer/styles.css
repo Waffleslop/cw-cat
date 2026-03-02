@@ -853,3 +853,60 @@ table.signals-table tr.new-spot {
   transform: translateX(14px);
   background: #fff;
 }
+
+/* Reader mode panel */
+.reader-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.reader-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.reader-header h3 {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.reader-freq {
+  font-family: 'Consolas', monospace;
+  font-size: 12px;
+  color: var(--accent);
+}
+
+#reader-wpm {
+  font-family: 'Consolas', monospace;
+  font-size: 12px;
+  color: var(--yellow);
+}
+
+.reader-text-container {
+  flex: 1;
+  overflow-y: auto;
+  background: var(--canvas-bg);
+}
+
+.reader-text {
+  font-family: 'Consolas', monospace;
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-all;
+  padding: 12px;
+  margin: 0;
+  user-select: text;
+  min-height: 100%;
+}

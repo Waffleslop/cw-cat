@@ -33,6 +33,11 @@
       <span class="utc-clock" id="utc-clock">00:00:00Z</span>
     </div>
     <div class="titlebar-right">
+      <label class="switch-label compact" title="Toggle skimmer/reader mode">
+        <span>Skimmer</span>
+        <div class="switch"><input type="checkbox" id="mode-toggle"><span class="switch-slider"></span></div>
+        <span>Reader</span>
+      </label>
       <label class="switch-label compact" title="Toggle light/dark mode">
         <span>Dark</span>
         <div class="switch"><input type="checkbox" id="theme-toggle"><span class="switch-slider"></span></div>
@@ -129,6 +134,18 @@
       <div class="decoders-panel">
         <div class="decoders-header">Active Decoders</div>
         <div class="decoders-list" id="decoders-list"></div>
+      </div>
+    </div>
+
+    <!-- Reader mode panel (hidden by default) -->
+    <div class="reader-panel" id="reader-panel" style="display:none;">
+      <div class="reader-header">
+        <h3>CW Reader</h3>
+        <span class="reader-freq" id="reader-freq">--</span>
+        <span id="reader-wpm">-- WPM</span>
+      </div>
+      <div class="reader-text-container">
+        <pre class="reader-text" id="reader-text"></pre>
       </div>
     </div>
   </div>

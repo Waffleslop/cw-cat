@@ -19,6 +19,8 @@ let settings = {};
 let spots = []; // Array of decoded spot objects
 let activeDecoders = new Map(); // freqOffset → { text, wpm, snr }
 let spectrumData = null;
+let currentMode = 'skimmer'; // 'skimmer' or 'reader'
+let sliceFreqMHz = 0; // Current Slice A frequency in MHz
 
 // --- DOM refs ---
 const radioDot = document.getElementById('radio-dot');
@@ -38,6 +40,13 @@ const spectrumCanvas = document.getElementById('spectrum-canvas');
 const waterfallCanvas = document.getElementById('waterfall-canvas');
 const spectrumLabel = document.getElementById('spectrum-label');
 const freqAxis = document.getElementById('freq-axis');
+
+const modeToggle = document.getElementById('mode-toggle');
+const bottomContent = document.querySelector('.bottom-content');
+const readerPanel = document.getElementById('reader-panel');
+const readerText = document.getElementById('reader-text');
+const readerFreqEl = document.getElementById('reader-freq');
+const readerWpm = document.getElementById('reader-wpm');
 
 const settingsOverlay = document.getElementById('settings-overlay');
 const settingsBtn = document.getElementById('settings-btn');
@@ -94,10 +103,24 @@ resizeCanvases();
 function renderSpectrum(data) {
   if (!data || !data.magnitudes) return;
 
-  const mags = data.magnitudes;
+  let mags = data.magnitudes;
+  let effectiveSampleRate = data.sampleRate;
+
+  // In reader mode, zoom to ±READER_ZOOM_HZ around center
+  if (currentMode === 'reader' && data.sampleRate) {
+    const fullN = mags.length;
+    const binWidth = data.sampleRate / fullN;
+    const zoomBins = Math.floor(READER_ZOOM_HZ / binWidth);
+    const centerBin = Math.floor(fullN / 2);
+    const startBin = Math.max(0, centerBin - zoomBins);
+    const endBin = Math.min(fullN, centerBin + zoomBins);
+    mags = mags.slice(startBin, endBin);
+    effectiveSampleRate = READER_ZOOM_HZ * 2;
+  }
+
+  const N = mags.length;
   const w = spectrumCanvas.width;
   const h = spectrumCanvas.height;
-  const N = mags.length;
 
   // Clear
   spectrumCtx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--canvas-bg').trim();
@@ -176,14 +199,14 @@ function renderSpectrum(data) {
   spectrumCtx.fill();
 
   // Update label
-  const bw = data.sampleRate ? (data.sampleRate / 1000).toFixed(0) + ' kHz' : '--';
+  const bw = effectiveSampleRate ? (effectiveSampleRate / 1000).toFixed(0) + ' kHz' : '--';
   spectrumLabel.textContent = `BW: ${bw} | FFT: ${data.fftSize || '--'}`;
 
   // --- Waterfall ---
   renderWaterfallRow(mags, dbMin, dbMax);
 
   // --- Frequency axis ---
-  renderFreqAxis(data);
+  renderFreqAxis({ ...data, sampleRate: effectiveSampleRate });
 }
 
 function renderWaterfallRow(mags, dbMin, dbMax) {
@@ -436,6 +459,39 @@ settingsOverlay.addEventListener('click', (e) => {
   }
 });
 
+// --- Mode toggle (Skimmer / Reader) ---
+// Reader mode zoom: show ±READER_ZOOM_HZ around center instead of full bandwidth
+const READER_ZOOM_HZ = 5000; // ±5 kHz
+
+function setDecodeMode(mode) {
+  currentMode = mode;
+  modeToggle.checked = mode === 'reader';
+
+  // Clear waterfall when switching modes (zoom level changes)
+  try { waterfallCtx.clearRect(0, 0, waterfallCanvas.width, waterfallCanvas.height); } catch {}
+
+  if (mode === 'reader') {
+    bottomContent.style.display = 'none';
+    readerPanel.style.display = 'flex';
+    readerText.textContent = '';
+    readerWpm.textContent = '-- WPM';
+    readerFreqEl.textContent = sliceFreqMHz > 0
+      ? (sliceFreqMHz * 1000).toFixed(1) + ' kHz'
+      : '--';
+  } else {
+    readerPanel.style.display = 'none';
+    bottomContent.style.display = 'flex';
+    activeDecoders.clear();
+    updateDecoders();
+  }
+
+  window.api.setDecodeMode(mode);
+}
+
+modeToggle.addEventListener('change', (e) => {
+  setDecodeMode(e.target.checked ? 'reader' : 'skimmer');
+});
+
 // --- Theme toggle (header) ---
 document.getElementById('theme-toggle').addEventListener('change', async (e) => {
   const light = e.target.checked;
@@ -492,7 +548,16 @@ window.api.onSignals((signals) => {
 });
 
 window.api.onDecode((data) => {
-  // Update active decoders display
+  if (currentMode === 'reader') {
+    // Reader mode: show decoded text in the reader panel
+    readerText.textContent = data.text || '';
+    if (data.wpm) readerWpm.textContent = `${data.wpm} WPM`;
+    // Auto-scroll to bottom
+    const container = readerText.parentElement;
+    container.scrollTop = container.scrollHeight;
+    return;
+  }
+  // Skimmer mode: update active decoders display
   const key = Math.round(data.freqOffset);
   activeDecoders.set(key, {
     text: data.text,
@@ -526,6 +591,16 @@ window.api.onRbnStatus((s) => {
 
 window.api.onClusterStatus((s) => {
   setDot(clusterDot, s.connected);
+});
+
+window.api.onSliceUpdate((slice) => {
+  const freq = parseFloat(slice.RF_frequency || 0);
+  if (freq > 0) {
+    sliceFreqMHz = freq;
+    if (currentMode === 'reader') {
+      readerFreqEl.textContent = (freq * 1000).toFixed(1) + ' kHz';
+    }
+  }
 });
 
 // --- Auto-update UI ---
@@ -641,6 +716,15 @@ async function init() {
   // Apply saved theme
   applyTheme(!!settings.lightMode);
   document.getElementById('theme-toggle').checked = !!settings.lightMode;
+
+  // Restore decode mode
+  const savedMode = settings.decodeMode || 'skimmer';
+  currentMode = savedMode;
+  modeToggle.checked = savedMode === 'reader';
+  if (savedMode === 'reader') {
+    bottomContent.style.display = 'none';
+    readerPanel.style.display = 'flex';
+  }
 
   const status = await window.api.getStatus();
   if (status) updateStatus(status);

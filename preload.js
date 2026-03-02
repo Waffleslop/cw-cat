@@ -12,6 +12,9 @@ contextBridge.exposeInMainWorld('api', {
   connectRadio: () => ipcRenderer.send('connect-radio'),
   disconnectRadio: () => ipcRenderer.send('disconnect-radio'),
 
+  // Decode mode (skimmer/reader)
+  setDecodeMode: (mode) => ipcRenderer.send('set-decode-mode', mode),
+
   // Events from main process
   onStatus: (cb) => ipcRenderer.on('status', (_e, data) => cb(data)),
   onSpectrum: (cb) => ipcRenderer.on('spectrum', (_e, data) => cb(data)),

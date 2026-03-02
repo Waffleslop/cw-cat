@@ -28,6 +28,7 @@ let maxWpm = 60;
 let ctyDb = null;
 let centerFreqMHz = 0; // Slice center frequency in MHz
 let pendingFreqChange = false; // Defer channel clearing to next processIqBlock()
+let readerMode = false; // true = single-channel reader, false = wideband skimmer
 
 // --- STFT channelizer toggle ---
 const USE_STFT_CHANNELIZER = true; // true = shared STFT (fast), false = per-channel NCO+FIR (legacy)
@@ -172,6 +173,13 @@ function processIqBlock(iqData) {
         binWidth: sampleRate / fftSize,
       },
     });
+  }
+
+  // --- Reader mode: single channel at freqOffset=0, skip detection/eviction ---
+  if (readerMode) {
+    processReaderMode(iqData, currentTime);
+    totalSamplesProcessed += iqData.length / 2;
+    return;
   }
 
   // 2. Signal detection — find peaks
@@ -465,6 +473,112 @@ function processIqBlock(iqData) {
   totalSamplesProcessed += iqData.length / 2; // iqData is interleaved I/Q
 }
 
+function processReaderMode(iqData, currentTime) {
+  const READER_KEY = 0;
+
+  // Ensure single reader channel exists at freqOffset=0
+  if (!channelState.has(READER_KEY)) {
+    const outputRate = USE_STFT_CHANNELIZER ? stftChannelizer.outputRate : CHANNEL_OUTPUT_RATE;
+    if (USE_STFT_CHANNELIZER) {
+      stftChannelizer.addChannel(0);
+    }
+    channelState.set(READER_KEY, {
+      channel: USE_STFT_CHANNELIZER ? null : new CwChannel(0, sampleRate, CHANNEL_OUTPUT_RATE, CHANNEL_BANDWIDTH),
+      envelope: new CwEnvelopeDetector(outputRate),
+      decoder: new MorseDecoder(minWpm, maxWpm),
+      text: '',
+      lastDecoderText: '',
+      lastActive: currentTime,
+      lastKeyTime: currentTime,
+      createdTime: currentTime,
+      freqOffset: 0,
+      snr: 0,
+    });
+    console.log('[DSP] Reader mode: created channel at 0 Hz offset');
+  }
+
+  const state = channelState.get(READER_KEY);
+  state.lastActive = currentTime;
+
+  // Process through STFT or legacy channelizer
+  let magnitudes;
+  if (USE_STFT_CHANNELIZER) {
+    const stftResults = stftChannelizer.processBlock(iqData);
+    magnitudes = stftResults ? stftResults.get(READER_KEY) : null;
+  } else {
+    magnitudes = state.channel.process(iqData);
+  }
+
+  if (!magnitudes || magnitudes.length === 0) return;
+
+  // Envelope detection
+  const outputRate = USE_STFT_CHANNELIZER ? stftChannelizer.outputRate : state.channel.outputRate;
+  const transitions = state.envelope.process(magnitudes, outputRate);
+
+  // Dynamic range check (lenient — user chose this signal)
+  const dr = state.envelope._peakMag / (state.envelope._noiseMag + 1e-10);
+  if (dr < 2.0) return;
+
+  // Morse decoding
+  diagTransitions += transitions.length;
+  if (transitions.length > 0) {
+    state.decoder.feedTransitions(transitions);
+    state.lastKeyTime = currentTime;
+
+    const decoderText = state.decoder.text;
+    if (decoderText !== state.lastDecoderText && decoderText.length >= 1) {
+      const newChars = decoderText.startsWith(state.lastDecoderText)
+        ? decoderText.slice(state.lastDecoderText.length)
+        : decoderText;
+      state.text += newChars;
+      state.lastDecoderText = decoderText;
+
+      parentPort.postMessage({
+        type: 'decode',
+        data: {
+          freqOffset: 0,
+          text: state.text,
+          wpm: state.decoder.wpm,
+          snr: state.snr || 0,
+        },
+      });
+    }
+  }
+
+  // Transmission timeout → flush and reset decoder
+  const silenceSec = currentTime - state.lastKeyTime;
+  const timeoutSec = Math.min(Math.max(state.decoder._ditDuration * 25, 3.0), 8.0);
+  if (state.decoder._started && silenceSec > timeoutSec) {
+    state.decoder.flush();
+    const finalText = state.decoder.text;
+    if (finalText !== state.lastDecoderText) {
+      const newChars = finalText.startsWith(state.lastDecoderText)
+        ? finalText.slice(state.lastDecoderText.length)
+        : finalText;
+      state.text += newChars;
+    }
+    state.text += ' ';
+    state.decoder.reset();
+    state.lastDecoderText = '';
+
+    // Send updated text after flush
+    parentPort.postMessage({
+      type: 'decode',
+      data: {
+        freqOffset: 0,
+        text: state.text,
+        wpm: state.decoder.wpm,
+        snr: state.snr || 0,
+      },
+    });
+
+    // Trim to prevent unbounded growth — keep more text in reader mode
+    if (state.text.length > 2000) {
+      state.text = state.text.slice(-1000);
+    }
+  }
+}
+
 function tryExtractCallsign(key, state) {
   // Use recent text window to avoid re-matching old patterns
   // 160 chars keeps CQ/DE context visible longer as text scrolls (was 120)
@@ -540,6 +654,15 @@ parentPort.on('message', (msg) => {
           // Defer channel clearing to next processIqBlock() to avoid race conditions
           pendingFreqChange = true;
         }
+        break;
+
+      case 'set-mode':
+        readerMode = msg.mode === 'reader';
+        console.log(`[DSP] Mode: ${readerMode ? 'reader' : 'skimmer'}`);
+        // Clear all channels when switching modes — start fresh
+        channelState.clear();
+        recentlyEvicted.clear();
+        if (USE_STFT_CHANNELIZER) stftChannelizer.clear();
         break;
 
       case 'stop':
