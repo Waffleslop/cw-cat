@@ -40,7 +40,7 @@ const CHANNEL_TIMEOUT_S = 30; // Remove channels inactive for this many seconds
 const MIN_SNR_FOR_CHANNEL = 12; // Raised back from 10 — too many noise channels at 10
 const MIN_PERSISTENCE_FOR_CHANNEL = 6; // Faster channel creation (6 frames ≈ 65ms, was 8)
 const CHANNEL_OUTPUT_RATE = 800; // Channelizer output rate in Hz
-const CHANNEL_BANDWIDTH = 120;   // Channel bandwidth in Hz (narrowed from 150 for better adjacent rejection)
+const CHANNEL_BANDWIDTH = 100;   // Channel bandwidth in Hz (100Hz balances noise rejection vs keying fidelity)
 
 // Recently-evicted frequencies: prevents churn where a channel is evicted
 // then immediately re-created at the same frequency in a loop
