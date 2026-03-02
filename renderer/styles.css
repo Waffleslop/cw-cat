@@ -218,6 +218,19 @@ body {
   pointer-events: none;
 }
 
+.tuning-line {
+  display: none;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  background: var(--red);
+  opacity: 0.7;
+  z-index: 3;
+  pointer-events: none;
+}
+
 /* Frequency axis */
 .freq-axis {
   height: 20px;

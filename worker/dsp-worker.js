@@ -26,7 +26,8 @@ let threshold = 6;
 let minWpm = 8;
 let maxWpm = 60;
 let ctyDb = null;
-let centerFreqMHz = 0; // Slice center frequency in MHz
+let centerFreqMHz = 0; // Panadapter center frequency in MHz
+let sliceFreqMHz = 0;  // Slice A frequency in MHz (for reader mode targeting)
 let pendingFreqChange = false; // Defer channel clearing to next processIqBlock()
 let readerMode = false; // true = single-channel reader, false = wideband skimmer
 
@@ -90,9 +91,43 @@ function processIqBlock(iqData) {
   // Apply deferred frequency change — clear channels safely outside iteration
   if (pendingFreqChange) {
     pendingFreqChange = false;
-    channelState.clear();
-    recentlyEvicted.clear();
-    if (USE_STFT_CHANNELIZER) stftChannelizer.clear();
+    if (readerMode && readerChannelFreq !== null && readerChannelKey !== null) {
+      // Reader mode: don't destroy the channel on pan center drift.
+      // Recalculate the offset for the new center frequency and update in place.
+      const newOffset = (sliceFreqMHz && centerFreqMHz)
+        ? (sliceFreqMHz - centerFreqMHz) * 1e6
+        : readerChannelFreq;
+      // Find closest signal to expected offset (reuse existing if close enough)
+      const drift = Math.abs(newOffset - readerChannelFreq);
+      if (drift < 500) {
+        // Small pan drift — adjust channel offset without resetting decoder
+        const newKey = Math.round(newOffset);
+        if (USE_STFT_CHANNELIZER) {
+          stftChannelizer.removeChannel(readerChannelKey);
+          stftChannelizer.addChannel(newOffset);
+        }
+        const state = channelState.get(readerChannelKey);
+        if (state) {
+          channelState.delete(readerChannelKey);
+          state.freqOffset = newOffset;
+          channelState.set(newKey, state);
+        }
+        readerChannelFreq = newOffset;
+        readerChannelKey = newKey;
+        console.log(`[DSP] Reader: adjusted offset to ${newOffset.toFixed(0)}Hz (pan drift ${drift.toFixed(0)}Hz)`);
+      } else {
+        // Large change — full reset (different band/pan)
+        channelState.clear();
+        if (USE_STFT_CHANNELIZER) stftChannelizer.clear();
+        readerChannelFreq = null;
+        readerChannelKey = null;
+      }
+    } else {
+      // Skimmer mode or no reader channel: clear everything
+      channelState.clear();
+      recentlyEvicted.clear();
+      if (USE_STFT_CHANNELIZER) stftChannelizer.clear();
+    }
   }
 
   const now = Date.now();
@@ -473,17 +508,61 @@ function processIqBlock(iqData) {
   totalSamplesProcessed += iqData.length / 2; // iqData is interleaved I/Q
 }
 
-function processReaderMode(iqData, currentTime) {
-  const READER_KEY = 0;
+// Reader mode: find strongest signal near slice center and decode it
+const READER_SEARCH_HZ = 2000; // Search ±2 kHz around center for initial lock
+let readerChannelFreq = null; // Current reader channel frequency (null = not yet locked)
+let readerChannelKey = null;  // STFT channelizer key (Math.round of freq)
 
-  // Ensure single reader channel exists at freqOffset=0
-  if (!channelState.has(READER_KEY)) {
+function processReaderMode(iqData, currentTime) {
+  // Only search for a signal on initial lock (readerChannelFreq === null)
+  // Once locked, stay on that frequency until user retunes slice in SSDR
+  let targetFreq = readerChannelFreq;
+  let needNewChannel = false;
+  let bestSignal = null;
+
+  if (readerChannelFreq === null) {
+    // Not locked yet — find strongest signal near slice frequency
+    // Slice offset from pan center in Hz
+    const sliceOffsetHz = (sliceFreqMHz && centerFreqMHz)
+      ? (sliceFreqMHz - centerFreqMHz) * 1e6
+      : 0;
+    const signals = signalDetector.detect(fftProcessor._magnitudes);
+    // Log all signals near slice to help debug
+    const nearby = signals
+      .filter(s => Math.abs(s.freqOffset - sliceOffsetHz) <= READER_SEARCH_HZ)
+      .map(s => `${s.freqOffset.toFixed(0)}Hz(SNR=${s.snr.toFixed(1)})`);
+    if (nearby.length > 0 || signals.length === 0) {
+      console.log(`[DSP] Reader: searching ±${READER_SEARCH_HZ}Hz around slice offset ${sliceOffsetHz.toFixed(0)}Hz — found: [${nearby.join(', ')}] (total signals: ${signals.length})`);
+    }
+    for (const sig of signals) {
+      if (Math.abs(sig.freqOffset - sliceOffsetHz) > READER_SEARCH_HZ) continue;
+      if (!bestSignal || sig.snr > bestSignal.snr) bestSignal = sig;
+    }
+    if (!bestSignal) return; // Nothing to lock to yet
+    targetFreq = bestSignal.freqOffset;
+    needNewChannel = true;
+    console.log(`[DSP] Reader: locked to signal at ${targetFreq.toFixed(0)} Hz offset (SNR=${bestSignal.snr.toFixed(1)})`);
+  }
+
+  // Use rounded freq as the STFT channelizer key
+  const targetKey = Math.round(targetFreq);
+
+  // Create new channel or update existing one
+  if (needNewChannel || readerChannelKey === null) {
+    // Remove old channel if switching
+    if (readerChannelKey !== null) {
+      if (USE_STFT_CHANNELIZER) stftChannelizer.removeChannel(readerChannelKey);
+      channelState.delete(readerChannelKey);
+    }
     const outputRate = USE_STFT_CHANNELIZER ? stftChannelizer.outputRate : CHANNEL_OUTPUT_RATE;
     if (USE_STFT_CHANNELIZER) {
-      stftChannelizer.addChannel(0);
+      stftChannelizer.addChannel(targetFreq);
     }
-    channelState.set(READER_KEY, {
-      channel: USE_STFT_CHANNELIZER ? null : new CwChannel(0, sampleRate, CHANNEL_OUTPUT_RATE, CHANNEL_BANDWIDTH),
+    readerChannelFreq = targetFreq;
+    readerChannelKey = targetKey;
+
+    channelState.set(targetKey, {
+      channel: USE_STFT_CHANNELIZER ? null : new CwChannel(targetFreq, sampleRate, CHANNEL_OUTPUT_RATE, CHANNEL_BANDWIDTH),
       envelope: new CwEnvelopeDetector(outputRate),
       decoder: new MorseDecoder(minWpm, maxWpm),
       text: '',
@@ -491,20 +570,28 @@ function processReaderMode(iqData, currentTime) {
       lastActive: currentTime,
       lastKeyTime: currentTime,
       createdTime: currentTime,
-      freqOffset: 0,
-      snr: 0,
+      freqOffset: targetFreq,
+      snr: (bestSignal || {}).snr || 0,
     });
-    console.log('[DSP] Reader mode: created channel at 0 Hz offset');
+    console.log(`[DSP] Reader: channel at ${targetFreq.toFixed(0)} Hz (key=${targetKey})`);
+  } else if (Math.abs(targetFreq - readerChannelFreq) > 10) {
+    // Drift update — frequency changed but same channel
+    if (USE_STFT_CHANNELIZER) {
+      stftChannelizer.updateChannelFreq(readerChannelKey, targetFreq);
+    }
+    readerChannelFreq = targetFreq;
+    channelState.get(readerChannelKey).freqOffset = targetFreq;
   }
 
-  const state = channelState.get(READER_KEY);
+  const state = channelState.get(readerChannelKey);
+  if (!state) return;
   state.lastActive = currentTime;
 
   // Process through STFT or legacy channelizer
   let magnitudes;
   if (USE_STFT_CHANNELIZER) {
     const stftResults = stftChannelizer.processBlock(iqData);
-    magnitudes = stftResults ? stftResults.get(READER_KEY) : null;
+    magnitudes = stftResults ? stftResults.get(readerChannelKey) : null;
   } else {
     magnitudes = state.channel.process(iqData);
   }
@@ -515,9 +602,9 @@ function processReaderMode(iqData, currentTime) {
   const outputRate = USE_STFT_CHANNELIZER ? stftChannelizer.outputRate : state.channel.outputRate;
   const transitions = state.envelope.process(magnitudes, outputRate);
 
-  // Dynamic range check (lenient — user chose this signal)
+  // Dynamic range check — require minimum DR to avoid feeding noise to decoder
   const dr = state.envelope._peakMag / (state.envelope._noiseMag + 1e-10);
-  if (dr < 2.0) return;
+  if (dr < 3.0) return;
 
   // Morse decoding
   diagTransitions += transitions.length;
@@ -536,7 +623,7 @@ function processReaderMode(iqData, currentTime) {
       parentPort.postMessage({
         type: 'decode',
         data: {
-          freqOffset: 0,
+          freqOffset: state.freqOffset,
           text: state.text,
           wpm: state.decoder.wpm,
           snr: state.snr || 0,
@@ -561,20 +648,37 @@ function processReaderMode(iqData, currentTime) {
     state.decoder.reset();
     state.lastDecoderText = '';
 
-    // Send updated text after flush
     parentPort.postMessage({
       type: 'decode',
       data: {
-        freqOffset: 0,
+        freqOffset: state.freqOffset,
         text: state.text,
         wpm: state.decoder.wpm,
         snr: state.snr || 0,
       },
     });
 
-    // Trim to prevent unbounded growth — keep more text in reader mode
+    // Trim to prevent unbounded growth
     if (state.text.length > 2000) {
       state.text = state.text.slice(-1000);
+    }
+  }
+
+  // Quality watchdog: if recent text is mostly garbage, reset decoder to re-lock.
+  // Only check every 5 seconds (via readerLastQualityCheck) to avoid reset loops.
+  if (state.decoder._speedLocked && currentTime - (state.lastQualityCheck || 0) > 5.0) {
+    state.lastQualityCheck = currentTime;
+    const recent = state.text.slice(-40);
+    if (recent.length >= 20) {
+      const errorCount = (recent.match(/\u00BF/g) || []).length;
+      const monotony = (recent.match(/(.)\1{4,}/g) || []).length;
+      const errorRate = errorCount / recent.length;
+      if (errorRate > 0.3 || monotony >= 2) {
+        console.log(`[DSP] Reader: decoder quality poor (errors=${errorRate.toFixed(2)}, monotony=${monotony}), resetting`);
+        state.decoder = new MorseDecoder(minWpm, maxWpm);
+        state.lastDecoderText = '';
+        state.text = '';
+      }
     }
   }
 }
@@ -650,9 +754,24 @@ parentPort.on('message', (msg) => {
       case 'set-center-freq':
         if (msg.centerMHz && msg.centerMHz !== centerFreqMHz) {
           centerFreqMHz = msg.centerMHz;
-          console.log(`[DSP] Center frequency: ${centerFreqMHz.toFixed(6)} MHz`);
-          // Defer channel clearing to next processIqBlock() to avoid race conditions
+          console.log(`[DSP] Pan center frequency: ${centerFreqMHz.toFixed(6)} MHz`);
+          // Defer channel update to next processIqBlock()
+          // In reader mode, the handler will adjust offset instead of clearing
           pendingFreqChange = true;
+        }
+        break;
+
+      case 'set-slice-freq':
+        if (msg.sliceFreqMHz && msg.sliceFreqMHz !== sliceFreqMHz) {
+          const oldSlice = sliceFreqMHz;
+          sliceFreqMHz = msg.sliceFreqMHz;
+          console.log(`[DSP] Slice frequency: ${sliceFreqMHz.toFixed(6)} MHz`);
+          // If in reader mode and slice moved significantly, re-search for signal
+          if (readerMode && oldSlice > 0 && Math.abs(sliceFreqMHz - oldSlice) > 0.0005) {
+            console.log(`[DSP] Slice retuned — reader re-searching`);
+            readerChannelFreq = null;
+            readerChannelKey = null;
+          }
         }
         break;
 
@@ -662,6 +781,9 @@ parentPort.on('message', (msg) => {
         // Clear all channels when switching modes — start fresh
         channelState.clear();
         recentlyEvicted.clear();
+        readerChannelFreq = null;
+        readerChannelKey = null;
+    
         if (USE_STFT_CHANNELIZER) stftChannelizer.clear();
         break;
 

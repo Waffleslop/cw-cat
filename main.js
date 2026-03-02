@@ -369,15 +369,27 @@ function connectRadio() {
     });
 
     let lastSentCenterMHz = 0;
+    let lastSentPanCenter = 0;
     smartSdr.on('slice', (slice) => {
       if (win && !win.isDestroyed()) {
         win.webContents.send('slice-update', slice);
       }
-      // Forward center frequency to DSP worker — only when RF frequency actually changes
-      const centerMHz = smartSdr.getSliceFreq(0);
-      if (centerMHz > 0 && centerMHz !== lastSentCenterMHz) {
-        lastSentCenterMHz = centerMHz;
-        sendToDspWorker({ type: 'set-center-freq', centerMHz });
+      // Send slice frequency to worker so reader mode knows where to look
+      const sliceFreq = smartSdr.getSliceFreq(0);
+      if (sliceFreq > 0) {
+        sendToDspWorker({ type: 'set-slice-freq', sliceFreqMHz: sliceFreq });
+      }
+    });
+
+    smartSdr.on('panadapter', (pan) => {
+      // The panadapter center is the actual center of the DAX IQ data
+      const panCenter = smartSdr.getPanCenter();
+      if (panCenter > 0 && panCenter !== lastSentPanCenter) {
+        lastSentPanCenter = panCenter;
+        sendToDspWorker({ type: 'set-center-freq', centerMHz: panCenter });
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('pan-center', panCenter);
+        }
       }
     });
 
@@ -574,9 +586,15 @@ autoUpdater.on('update-not-available', () => {
 });
 
 autoUpdater.on('error', (err) => {
+  // Suppress ENOENT errors — expected for portable/unpacked builds missing app-update.yml
+  const msg = err?.message || String(err);
+  if (msg.includes('ENOENT') && msg.includes('app-update.yml')) {
+    console.log('[updater] No app-update.yml — portable build, using GitHub API fallback');
+    return;
+  }
   console.error('autoUpdater error:', err);
   if (win && !win.isDestroyed()) {
-    win.webContents.send('update-error', err?.message || String(err));
+    win.webContents.send('update-error', msg);
   }
 });
 

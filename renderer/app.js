@@ -21,6 +21,7 @@ let activeDecoders = new Map(); // freqOffset → { text, wpm, snr }
 let spectrumData = null;
 let currentMode = 'skimmer'; // 'skimmer' or 'reader'
 let sliceFreqMHz = 0; // Current Slice A frequency in MHz
+let panCenterMHz = 0; // Panadapter center frequency (actual IQ data center)
 
 // --- DOM refs ---
 const radioDot = document.getElementById('radio-dot');
@@ -47,6 +48,7 @@ const readerPanel = document.getElementById('reader-panel');
 const readerText = document.getElementById('reader-text');
 const readerFreqEl = document.getElementById('reader-freq');
 const readerWpm = document.getElementById('reader-wpm');
+const tuningLine = document.getElementById('tuning-line');
 
 const settingsOverlay = document.getElementById('settings-overlay');
 const settingsBtn = document.getElementById('settings-btn');
@@ -293,7 +295,11 @@ function renderFreqAxis(data) {
     label.style.color = 'var(--text-dim)';
     label.style.top = '3px';
 
-    if (Math.abs(freqOffset) < 100) {
+    if (currentMode === 'reader' && panCenterMHz > 0) {
+      // Reader mode: show absolute kHz frequencies based on panadapter center
+      const absKhz = panCenterMHz * 1000 + freqOffset / 1000;
+      label.textContent = absKhz.toFixed(1);
+    } else if (Math.abs(freqOffset) < 100) {
       label.textContent = '0';
     } else {
       label.textContent = (freqOffset / 1000).toFixed(1) + 'k';
@@ -461,7 +467,27 @@ settingsOverlay.addEventListener('click', (e) => {
 
 // --- Mode toggle (Skimmer / Reader) ---
 // Reader mode zoom: show ±READER_ZOOM_HZ around center instead of full bandwidth
-const READER_ZOOM_HZ = 5000; // ±5 kHz
+const READER_ZOOM_HZ = 10000; // ±10 kHz
+
+/**
+ * Clean reader mode text for display: suppress garbage decode artifacts.
+ * - Remove ¿ (unknown Morse sequences)
+ * - Collapse runs of 3+ identical single-element chars (TTTT, EEEE, etc.)
+ * - Collapse runs of 4+ mixed single-element chars (EIST5H with no real chars)
+ * - Normalize excess whitespace
+ */
+function cleanReaderText(text) {
+  // Remove ¿ (unknown Morse)
+  text = text.replace(/\u00BF/g, '');
+  // Collapse runs of 3+ identical chars (TTTT→, EEEE→, etc.)
+  text = text.replace(/([A-Z0-9])\1{2,}/g, '');
+  // Remove isolated single-element noise: short words (1-2 chars) that are
+  // only E/I/T/S/5/H — these are almost always misclassified noise
+  text = text.replace(/\b[EIST5H]{1,2}\b/g, '');
+  // Normalize whitespace: collapse multiple spaces, trim
+  text = text.replace(/  +/g, ' ').trim();
+  return text;
+}
 
 function setDecodeMode(mode) {
   currentMode = mode;
@@ -478,9 +504,12 @@ function setDecodeMode(mode) {
     readerFreqEl.textContent = sliceFreqMHz > 0
       ? (sliceFreqMHz * 1000).toFixed(1) + ' kHz'
       : '--';
+    tuningLine.style.display = 'block';
+    updateReaderTuningLine();
   } else {
     readerPanel.style.display = 'none';
     bottomContent.style.display = 'flex';
+    tuningLine.style.display = 'none';
     activeDecoders.clear();
     updateDecoders();
   }
@@ -549,8 +578,8 @@ window.api.onSignals((signals) => {
 
 window.api.onDecode((data) => {
   if (currentMode === 'reader') {
-    // Reader mode: show decoded text in the reader panel
-    readerText.textContent = data.text || '';
+    // Reader mode: show cleaned decoded text in the reader panel
+    readerText.textContent = cleanReaderText(data.text || '');
     if (data.wpm) readerWpm.textContent = `${data.wpm} WPM`;
     // Auto-scroll to bottom
     const container = readerText.parentElement;
@@ -597,11 +626,24 @@ window.api.onSliceUpdate((slice) => {
   const freq = parseFloat(slice.RF_frequency || 0);
   if (freq > 0) {
     sliceFreqMHz = freq;
-    if (currentMode === 'reader') {
-      readerFreqEl.textContent = (freq * 1000).toFixed(1) + ' kHz';
-    }
+    updateReaderTuningLine();
   }
 });
+
+window.api.onPanCenter((freqMHz) => {
+  panCenterMHz = freqMHz;
+  updateReaderTuningLine();
+});
+
+function updateReaderTuningLine() {
+  if (currentMode !== 'reader' || !sliceFreqMHz || !panCenterMHz) return;
+  // Show slice frequency in the reader header
+  readerFreqEl.textContent = (sliceFreqMHz * 1000).toFixed(1) + ' kHz';
+  // Position tuning line: slice freq relative to pan center, mapped to ±READER_ZOOM_HZ
+  const sliceOffsetHz = (sliceFreqMHz - panCenterMHz) * 1e6;
+  const lineFrac = 0.5 + (sliceOffsetHz / (READER_ZOOM_HZ * 2));
+  tuningLine.style.left = Math.max(0, Math.min(100, lineFrac * 100)).toFixed(2) + '%';
+}
 
 // --- Auto-update UI ---
 (function setupUpdateBanner() {
@@ -724,6 +766,7 @@ async function init() {
   if (savedMode === 'reader') {
     bottomContent.style.display = 'none';
     readerPanel.style.display = 'flex';
+    tuningLine.style.display = 'block';
   }
 
   const status = await window.api.getStatus();

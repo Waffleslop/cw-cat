@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('api', {
   onDecode: (cb) => ipcRenderer.on('decode', (_e, data) => cb(data)),
   onNewSpot: (cb) => ipcRenderer.on('new-spot', (_e, data) => cb(data)),
   onSliceUpdate: (cb) => ipcRenderer.on('slice-update', (_e, data) => cb(data)),
+  onPanCenter: (cb) => ipcRenderer.on('pan-center', (_e, freqMHz) => cb(freqMHz)),
   onRbnStatus: (cb) => ipcRenderer.on('rbn-status', (_e, s) => cb(s)),
   onClusterStatus: (cb) => ipcRenderer.on('cluster-status', (_e, s) => cb(s)),
 
