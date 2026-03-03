@@ -15,9 +15,6 @@ contextBridge.exposeInMainWorld('api', {
   // Decode mode (skimmer/reader)
   setDecodeMode: (mode) => ipcRenderer.send('set-decode-mode', mode),
 
-  // Click-to-tune
-  tuneSlice: (freqMHz) => ipcRenderer.send('tune-slice', freqMHz),
-
   // Events from main process
   onStatus: (cb) => ipcRenderer.on('status', (_e, data) => cb(data)),
   onSpectrum: (cb) => ipcRenderer.on('spectrum', (_e, data) => cb(data)),

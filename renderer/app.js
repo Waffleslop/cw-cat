@@ -22,7 +22,6 @@ let spectrumData = null;
 let currentMode = 'skimmer'; // 'skimmer' or 'reader'
 let sliceFreqMHz = 0; // Current Slice A frequency in MHz
 let panCenterMHz = 0; // Panadapter center frequency (actual IQ data center)
-let lastSampleRate = 0; // Last known sample rate from spectrum data (for click-to-tune)
 
 // --- DOM refs ---
 const radioDot = document.getElementById('radio-dot');
@@ -49,7 +48,6 @@ const readerPanel = document.getElementById('reader-panel');
 const readerText = document.getElementById('reader-text');
 const readerFreqEl = document.getElementById('reader-freq');
 const readerWpm = document.getElementById('reader-wpm');
-const readerClearBtn = document.getElementById('reader-clear-btn');
 const tuningLine = document.getElementById('tuning-line');
 
 const settingsOverlay = document.getElementById('settings-overlay');
@@ -110,17 +108,14 @@ function renderSpectrum(data) {
   let mags = data.magnitudes;
   let effectiveSampleRate = data.sampleRate;
 
-  // In reader mode, zoom to ±READER_ZOOM_HZ centered on slice frequency
+  // In reader mode, zoom to ±READER_ZOOM_HZ around center
   if (currentMode === 'reader' && data.sampleRate) {
     const fullN = mags.length;
     const binWidth = data.sampleRate / fullN;
     const zoomBins = Math.floor(READER_ZOOM_HZ / binWidth);
-    // Center on slice frequency offset from pan center (not DC)
-    const sliceOffsetHz = (sliceFreqMHz && panCenterMHz)
-      ? (sliceFreqMHz - panCenterMHz) * 1e6 : 0;
-    const sliceBin = Math.floor(fullN / 2) + Math.round(sliceOffsetHz / binWidth);
-    const startBin = Math.max(0, sliceBin - zoomBins);
-    const endBin = Math.min(fullN, sliceBin + zoomBins);
+    const centerBin = Math.floor(fullN / 2);
+    const startBin = Math.max(0, centerBin - zoomBins);
+    const endBin = Math.min(fullN, centerBin + zoomBins);
     mags = mags.slice(startBin, endBin);
     effectiveSampleRate = READER_ZOOM_HZ * 2;
   }
@@ -300,9 +295,9 @@ function renderFreqAxis(data) {
     label.style.color = 'var(--text-dim)';
     label.style.top = '3px';
 
-    if (currentMode === 'reader' && sliceFreqMHz > 0) {
-      // Reader mode: show absolute kHz frequencies centered on slice
-      const absKhz = sliceFreqMHz * 1000 + freqOffset / 1000;
+    if (currentMode === 'reader' && panCenterMHz > 0) {
+      // Reader mode: show absolute kHz frequencies based on panadapter center
+      const absKhz = panCenterMHz * 1000 + freqOffset / 1000;
       label.textContent = absKhz.toFixed(1);
     } else if (Math.abs(freqOffset) < 100) {
       label.textContent = '0';
@@ -526,10 +521,6 @@ modeToggle.addEventListener('change', (e) => {
   setDecodeMode(e.target.checked ? 'reader' : 'skimmer');
 });
 
-readerClearBtn.addEventListener('click', () => {
-  readerText.textContent = '';
-});
-
 // --- Theme toggle (header) ---
 document.getElementById('theme-toggle').addEventListener('change', async (e) => {
   const light = e.target.checked;
@@ -578,7 +569,6 @@ window.api.onStatus(updateStatus);
 
 window.api.onSpectrum((data) => {
   spectrumData = data;
-  if (data.sampleRate) lastSampleRate = data.sampleRate;
   renderSpectrum(data);
 });
 
@@ -646,12 +636,13 @@ window.api.onPanCenter((freqMHz) => {
 });
 
 function updateReaderTuningLine() {
-  if (currentMode !== 'reader') return;
-  if (sliceFreqMHz > 0) {
-    readerFreqEl.textContent = (sliceFreqMHz * 1000).toFixed(1) + ' kHz';
-  }
-  // Spectrum is now centered on the slice frequency, so the tuning line is always at center
-  tuningLine.style.left = '50%';
+  if (currentMode !== 'reader' || !sliceFreqMHz || !panCenterMHz) return;
+  // Show slice frequency in the reader header
+  readerFreqEl.textContent = (sliceFreqMHz * 1000).toFixed(1) + ' kHz';
+  // Position tuning line: slice freq relative to pan center, mapped to ±READER_ZOOM_HZ
+  const sliceOffsetHz = (sliceFreqMHz - panCenterMHz) * 1e6;
+  const lineFrac = 0.5 + (sliceOffsetHz / (READER_ZOOM_HZ * 2));
+  tuningLine.style.left = Math.max(0, Math.min(100, lineFrac * 100)).toFixed(2) + '%';
 }
 
 // --- Auto-update UI ---
@@ -788,42 +779,3 @@ async function init() {
 }
 
 init();
-
-// --- Click-to-tune and hover frequency ---
-(function setupClickToTune() {
-  const container = document.querySelector('.spectrum-canvas-container');
-  if (!container) return;
-
-  /** Convert an X pixel offset on the container to an absolute frequency in MHz. */
-  function xToFreqMHz(offsetX) {
-    const frac = offsetX / container.clientWidth;
-    if (currentMode === 'reader' && sliceFreqMHz > 0) {
-      const freqOffsetHz = (frac - 0.5) * READER_ZOOM_HZ * 2;
-      return sliceFreqMHz + freqOffsetHz / 1e6;
-    }
-    // Skimmer mode
-    if (!lastSampleRate || !panCenterMHz) return 0;
-    const freqOffsetHz = (frac - 0.5) * lastSampleRate;
-    return panCenterMHz + freqOffsetHz / 1e6;
-  }
-
-  container.addEventListener('click', (e) => {
-    const freqMHz = xToFreqMHz(e.offsetX);
-    if (freqMHz > 0) {
-      window.api.tuneSlice(freqMHz);
-    }
-  });
-
-  container.addEventListener('mousemove', (e) => {
-    const freqMHz = xToFreqMHz(e.offsetX);
-    if (freqMHz > 0) {
-      const freqKhz = freqMHz * 1000;
-      spectrumLabel.textContent = freqKhz.toFixed(1) + ' kHz';
-    }
-  });
-
-  container.addEventListener('mouseleave', () => {
-    // Restore default label on next spectrum render
-    spectrumLabel.textContent = '';
-  });
-})();
