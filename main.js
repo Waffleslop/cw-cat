@@ -159,6 +159,39 @@ function startDspWorker() {
     console.log(`[DSP] Worker exited with code ${code}`);
     dspWorker = null;
     dspWorkerReady = false;
+    // Auto-restart worker on unexpected exit (e.g., band change crash)
+    if (code !== 0 && !app.isQuitting) {
+      console.log('[DSP] Worker crashed — auto-restarting in 500ms');
+      setTimeout(() => {
+        if (!dspWorker) {
+          startDspWorker();
+          // Reconfigure the worker with current settings
+          if (settings) {
+            sendToDspWorker({
+              type: 'configure',
+              sampleRate: settings.sampleRate || 192000,
+              fftSize: 4096,
+              threshold: settings.detectionThreshold || 6,
+              minWpm: settings.minWpm || 8,
+              maxWpm: settings.maxWpm || 60,
+              ctyDatPath: path.join(__dirname, 'assets', 'cty.dat'),
+            });
+            sendToDspWorker({ type: 'set-mode', mode: settings.decodeMode || 'skimmer' });
+          }
+          // Resend current frequencies
+          if (smartSdr) {
+            const panCenter = smartSdr.getPanCenter();
+            if (panCenter > 0) {
+              sendToDspWorker({ type: 'set-center-freq', centerMHz: panCenter });
+            }
+            const sliceFreq = smartSdr.getSliceFreq(0);
+            if (sliceFreq > 0) {
+              sendToDspWorker({ type: 'set-slice-freq', sliceFreqMHz: sliceFreq });
+            }
+          }
+        }
+      }, 500);
+    }
   });
 }
 
@@ -200,10 +233,11 @@ function stopIqPipeline() {
 function handleDecodedSpot(data) {
   if (!settings || !data.callsign) return;
 
-  // Compute absolute frequency: slice center + offset from DSP
+  // Compute absolute frequency: pan center + offset from DSP
+  // DSP worker's freqOffset is relative to the panadapter center (IQ data center)
   let centerMHz = 0;
   if (smartSdr) {
-    centerMHz = smartSdr.getSliceFreq(0); // Use first slice as reference
+    centerMHz = smartSdr.getPanCenter() || smartSdr.getSliceFreq(0);
   }
   const freqMHz = centerMHz + (data.freqOffset || 0) / 1e6;
   const freqKhz = freqMHz * 1000;
@@ -526,6 +560,12 @@ ipcMain.on('disconnect-radio', () => {
   sendStatus();
 });
 
+ipcMain.on('tune-slice', (_e, freqMHz) => {
+  if (smartSdr && smartSdr.connected) {
+    smartSdr.setSliceFreq(0, freqMHz);
+  }
+});
+
 ipcMain.on('set-decode-mode', (_e, mode) => {
   if (settings) {
     settings.decodeMode = mode;
@@ -725,6 +765,7 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
+  app.isQuitting = true;
   if (telemetry) telemetry.stop();
   stopDspWorker();
   disconnectRadio();
