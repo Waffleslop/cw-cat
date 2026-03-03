@@ -121,6 +121,7 @@ function processIqBlock(iqData) {
         if (USE_STFT_CHANNELIZER) stftChannelizer.clear();
         readerChannelFreq = null;
         readerChannelKey = null;
+        readerSearchCount = 0;
       }
     } else {
       // Skimmer mode or no reader channel: clear everything
@@ -174,9 +175,9 @@ function processIqBlock(iqData) {
   }
 
   // Validate IQ block size matches FFT size
-  if (iqData.length !== fftSize * 2) {
+  if (!iqData || iqData.length !== fftSize * 2) {
     if (diagBlockCount <= 3) {
-      console.log(`[DSP] WARNING: iq block length ${iqData.length} != expected ${fftSize * 2}`);
+      console.log(`[DSP] WARNING: iq block length ${iqData ? iqData.length : 'null'} != expected ${fftSize * 2}`);
     }
     return;
   }
@@ -510,8 +511,10 @@ function processIqBlock(iqData) {
 
 // Reader mode: find strongest signal near slice center and decode it
 const READER_SEARCH_HZ = 2000; // Search ±2 kHz around center for initial lock
+const READER_FALLBACK_FRAMES = 20; // After this many failed searches, lock to slice offset directly
 let readerChannelFreq = null; // Current reader channel frequency (null = not yet locked)
 let readerChannelKey = null;  // STFT channelizer key (Math.round of freq)
+let readerSearchCount = 0;    // Number of consecutive failed signal searches
 
 function processReaderMode(iqData, currentTime) {
   // Only search for a signal on initial lock (readerChannelFreq === null)
@@ -526,22 +529,56 @@ function processReaderMode(iqData, currentTime) {
     const sliceOffsetHz = (sliceFreqMHz && centerFreqMHz)
       ? (sliceFreqMHz - centerFreqMHz) * 1e6
       : 0;
+    // During band changes, slice and pan center may be temporarily mismatched
+    // Skip searching if the offset is outside the IQ bandwidth
+    const halfBw = sampleRate / 2;
+    if (Math.abs(sliceOffsetHz) > halfBw) return;
     const signals = signalDetector.detect(fftProcessor._magnitudes);
     // Log all signals near slice to help debug
     const nearby = signals
       .filter(s => Math.abs(s.freqOffset - sliceOffsetHz) <= READER_SEARCH_HZ)
-      .map(s => `${s.freqOffset.toFixed(0)}Hz(SNR=${s.snr.toFixed(1)})`);
+      .sort((a, b) => Math.abs(a.freqOffset - sliceOffsetHz) - Math.abs(b.freqOffset - sliceOffsetHz))
+      .map(s => `${s.freqOffset.toFixed(0)}Hz(SNR=${s.snr.toFixed(1)},d=${Math.abs(s.freqOffset - sliceOffsetHz).toFixed(0)})`);
     if (nearby.length > 0 || signals.length === 0) {
       console.log(`[DSP] Reader: searching ±${READER_SEARCH_HZ}Hz around slice offset ${sliceOffsetHz.toFixed(0)}Hz — found: [${nearby.join(', ')}] (total signals: ${signals.length})`);
     }
+    // Prefer the CLOSEST signal to the expected offset (not strongest).
+    // The user has tuned to this frequency, so the signal they want is
+    // nearest to the slice offset. Among equally close signals, prefer stronger.
     for (const sig of signals) {
       if (Math.abs(sig.freqOffset - sliceOffsetHz) > READER_SEARCH_HZ) continue;
-      if (!bestSignal || sig.snr > bestSignal.snr) bestSignal = sig;
+      if (sig.snr < 10) continue; // Minimum SNR to be worth locking to
+      const dist = Math.abs(sig.freqOffset - sliceOffsetHz);
+      if (!bestSignal) {
+        bestSignal = sig;
+      } else {
+        const bestDist = Math.abs(bestSignal.freqOffset - sliceOffsetHz);
+        // Pick closer signal, or stronger if similar distance (<200 Hz)
+        if (dist < bestDist - 200 || (Math.abs(dist - bestDist) <= 200 && sig.snr > bestSignal.snr)) {
+          bestSignal = sig;
+        }
+      }
     }
-    if (!bestSignal) return; // Nothing to lock to yet
-    targetFreq = bestSignal.freqOffset;
-    needNewChannel = true;
-    console.log(`[DSP] Reader: locked to signal at ${targetFreq.toFixed(0)} Hz offset (SNR=${bestSignal.snr.toFixed(1)})`);
+    if (!bestSignal) {
+      readerSearchCount++;
+      // After enough failed searches, lock directly to the slice offset.
+      // The signal detector's DC skip zone (±234 Hz) blocks signals near center,
+      // but the user has tuned there so we should try decoding anyway.
+      if (readerSearchCount >= READER_FALLBACK_FRAMES) {
+        console.log(`[DSP] Reader: no signal found after ${readerSearchCount} searches — locking to slice offset ${sliceOffsetHz.toFixed(0)}Hz`);
+        targetFreq = sliceOffsetHz;
+        needNewChannel = true;
+        bestSignal = { snr: 0 }; // placeholder
+        readerSearchCount = 0;
+      } else {
+        return;
+      }
+    } else {
+      readerSearchCount = 0;
+      targetFreq = bestSignal.freqOffset;
+      needNewChannel = true;
+      console.log(`[DSP] Reader: locked to signal at ${targetFreq.toFixed(0)} Hz offset (SNR=${bestSignal.snr.toFixed(1)}, dist=${Math.abs(targetFreq - sliceOffsetHz).toFixed(0)}Hz from slice)`);
+    }
   }
 
   // Use rounded freq as the STFT channelizer key
@@ -674,10 +711,12 @@ function processReaderMode(iqData, currentTime) {
       const monotony = (recent.match(/(.)\1{4,}/g) || []).length;
       const errorRate = errorCount / recent.length;
       if (errorRate > 0.3 || monotony >= 2) {
-        console.log(`[DSP] Reader: decoder quality poor (errors=${errorRate.toFixed(2)}, monotony=${monotony}), resetting`);
+        console.log(`[DSP] Reader: decoder quality poor (errors=${errorRate.toFixed(2)}, monotony=${monotony}), resetting decoder`);
         state.decoder = new MorseDecoder(minWpm, maxWpm);
         state.lastDecoderText = '';
-        state.text = '';
+        // Keep accumulated text — don't clear the reader display.
+        // Just add a separator so the user sees the reset boundary.
+        state.text += ' ';
       }
     }
   }
@@ -747,17 +786,36 @@ parentPort.on('message', (msg) => {
 
       case 'iq-block': {
         const iqData = new Float32Array(msg.block);
-        processIqBlock(iqData);
+        try {
+          processIqBlock(iqData);
+        } catch (err) {
+          console.error('[DSP] processIqBlock error:', err.message, err.stack);
+          // Clear state to recover — next block will start fresh
+          channelState.clear();
+          recentlyEvicted.clear();
+          readerChannelFreq = null;
+          readerChannelKey = null;
+          if (USE_STFT_CHANNELIZER && stftChannelizer) stftChannelizer.clear();
+        }
         break;
       }
 
       case 'set-center-freq':
         if (msg.centerMHz && msg.centerMHz !== centerFreqMHz) {
+          const oldCenter = centerFreqMHz;
           centerFreqMHz = msg.centerMHz;
           console.log(`[DSP] Pan center frequency: ${centerFreqMHz.toFixed(6)} MHz`);
           // Defer channel update to next processIqBlock()
           // In reader mode, the handler will adjust offset instead of clearing
           pendingFreqChange = true;
+          // Large frequency change (>1 MHz) = band change — reset noise floor
+          if (oldCenter > 0 && Math.abs(centerFreqMHz - oldCenter) > 1.0) {
+            console.log(`[DSP] Band change detected (${oldCenter.toFixed(3)} → ${centerFreqMHz.toFixed(3)} MHz) — resetting signal detector`);
+            if (signalDetector) signalDetector.reset();
+            if (fftProcessor) {
+              fftProcessor._avgInitialized = false;
+            }
+          }
         }
         break;
 
@@ -771,6 +829,7 @@ parentPort.on('message', (msg) => {
             console.log(`[DSP] Slice retuned — reader re-searching`);
             readerChannelFreq = null;
             readerChannelKey = null;
+            readerSearchCount = 0;
           }
         }
         break;
@@ -783,7 +842,7 @@ parentPort.on('message', (msg) => {
         recentlyEvicted.clear();
         readerChannelFreq = null;
         readerChannelKey = null;
-    
+        readerSearchCount = 0;
         if (USE_STFT_CHANNELIZER) stftChannelizer.clear();
         break;
 
