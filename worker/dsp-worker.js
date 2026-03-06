@@ -437,7 +437,7 @@ function processIqBlock(iqData) {
     // Graduated threshold: strict before speed lock, lenient after
     // After lock we know it's real CW so we can trust weaker signals
     const dr = state.envelope._peakMag / (state.envelope._noiseMag + 1e-10);
-    const drThreshold = state.decoder._speedLocked ? 3.0 : 5.0;
+    const drThreshold = state.decoder._speedLocked ? 2.0 : 4.0;
     if (dr < drThreshold) continue;
 
     // Feed transitions to Morse decoder
@@ -510,8 +510,8 @@ function processIqBlock(iqData) {
 }
 
 // Reader mode: find strongest signal near slice center and decode it
-const READER_SEARCH_HZ = 2000; // Search ±2 kHz around center for initial lock
-const READER_FALLBACK_FRAMES = 20; // After this many failed searches, lock to slice offset directly
+const READER_SEARCH_HZ = 3000; // Search ±3 kHz around center for initial lock
+const READER_FALLBACK_FRAMES = 10; // After this many failed searches, lock to slice offset directly
 let readerChannelFreq = null; // Current reader channel frequency (null = not yet locked)
 let readerChannelKey = null;  // STFT channelizer key (Math.round of freq)
 let readerSearchCount = 0;    // Number of consecutive failed signal searches
@@ -547,7 +547,7 @@ function processReaderMode(iqData, currentTime) {
     // nearest to the slice offset. Among equally close signals, prefer stronger.
     for (const sig of signals) {
       if (Math.abs(sig.freqOffset - sliceOffsetHz) > READER_SEARCH_HZ) continue;
-      if (sig.snr < 10) continue; // Minimum SNR to be worth locking to
+      if (sig.snr < 6) continue; // Minimum SNR to lock to (user has tuned here)
       const dist = Math.abs(sig.freqOffset - sliceOffsetHz);
       if (!bestSignal) {
         bestSignal = sig;
@@ -640,8 +640,9 @@ function processReaderMode(iqData, currentTime) {
   const transitions = state.envelope.process(magnitudes, outputRate);
 
   // Dynamic range check — require minimum DR to avoid feeding noise to decoder
+  // Lowered to 2.0 for reader mode (user explicitly tuned here, trust the signal)
   const dr = state.envelope._peakMag / (state.envelope._noiseMag + 1e-10);
-  if (dr < 3.0) return;
+  if (dr < 2.0) return;
 
   // Morse decoding
   diagTransitions += transitions.length;

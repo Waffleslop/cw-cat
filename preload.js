@@ -15,6 +15,10 @@ contextBridge.exposeInMainWorld('api', {
   // Decode mode (skimmer/reader)
   setDecodeMode: (mode) => ipcRenderer.send('set-decode-mode', mode),
 
+  // CWX (CW transmit)
+  cwxSend: (text) => ipcRenderer.send('cwx-send', text),
+  cwxClear: () => ipcRenderer.send('cwx-clear'),
+
   // Events from main process
   onStatus: (cb) => ipcRenderer.on('status', (_e, data) => cb(data)),
   onSpectrum: (cb) => ipcRenderer.on('spectrum', (_e, data) => cb(data)),
@@ -25,6 +29,7 @@ contextBridge.exposeInMainWorld('api', {
   onPanCenter: (cb) => ipcRenderer.on('pan-center', (_e, freqMHz) => cb(freqMHz)),
   onRbnStatus: (cb) => ipcRenderer.on('rbn-status', (_e, s) => cb(s)),
   onClusterStatus: (cb) => ipcRenderer.on('cluster-status', (_e, s) => cb(s)),
+  onLog: (cb) => ipcRenderer.on('log', (_e, msg) => cb(msg)),
 
   // Window controls
   minimize: () => ipcRenderer.send('win-minimize'),

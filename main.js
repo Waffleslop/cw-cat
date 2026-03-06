@@ -43,6 +43,13 @@ const DEFAULT_SETTINGS = {
   minWpm: 8,
   maxWpm: 60,
   decodeMode: 'skimmer',
+  cwxMacros: [
+    { label: 'CQ', text: 'CQ CQ CQ DE {MYCALL} {MYCALL} K' },
+    { label: 'Exchange', text: '5NN 5NN' },
+    { label: 'TU', text: 'RR TU GA UR 5NN 5NN PA' },
+    { label: 'My Call', text: '{MYCALL} {MYCALL}' },
+    { label: '73', text: '73 DE {MYCALL} SK' },
+  ],
 };
 
 function loadSettings() {
@@ -72,13 +79,68 @@ let vitaDiagTimer = null;
 let dspWorker = null;
 let dspWorkerReady = false;
 
+// --- Verbose log (sent to renderer for user-facing log panel) ---
+function sendLog(msg) {
+  const ts = new Date().toISOString().slice(11, 23);
+  const line = `[${ts}] ${msg}`;
+  console.log(line);
+  if (win && !win.isDestroyed()) win.webContents.send('log', line);
+}
+
+// --- Window state persistence ---
+const WINDOW_STATE_PATH = path.join(app.getPath('userData'), 'window-state.json');
+
+function loadWindowState() {
+  try {
+    return JSON.parse(fs.readFileSync(WINDOW_STATE_PATH, 'utf-8'));
+  } catch {
+    return null;
+  }
+}
+
+function saveWindowState() {
+  if (!win || win.isDestroyed()) return;
+  const isMaximized = win.isMaximized();
+  // Save the restored (non-maximized) bounds so we can un-maximize to a sane position
+  const bounds = isMaximized ? (win._restoredBounds || win.getBounds()) : win.getBounds();
+  const state = { ...bounds, isMaximized };
+  try {
+    fs.writeFileSync(WINDOW_STATE_PATH, JSON.stringify(state));
+  } catch { /* ignore write errors */ }
+}
+
 function createWindow() {
-  win = new BrowserWindow({
+  const saved = loadWindowState();
+  const isReaderMode = settings && settings.decodeMode === 'reader';
+
+  const defaults = {
     width: 1280,
     height: 800,
-    minWidth: 900,
-    minHeight: 600,
-    backgroundColor: '#1a1a2e',
+    minWidth: isReaderMode ? 400 : 900,
+    minHeight: isReaderMode ? 300 : 200,
+  };
+
+  // Validate saved position is on a visible screen
+  let useSaved = false;
+  if (saved && saved.width > 100 && saved.height > 100) {
+    const { screen } = require('electron');
+    const displays = screen.getAllDisplays();
+    const visible = displays.some(d => {
+      const b = d.bounds;
+      return saved.x >= b.x - 100 && saved.x < b.x + b.width &&
+             saved.y >= b.y - 100 && saved.y < b.y + b.height;
+    });
+    if (visible) useSaved = true;
+  }
+
+  win = new BrowserWindow({
+    width: useSaved ? saved.width : defaults.width,
+    height: useSaved ? saved.height : defaults.height,
+    x: useSaved ? saved.x : undefined,
+    y: useSaved ? saved.y : undefined,
+    minWidth: defaults.minWidth,
+    minHeight: defaults.minHeight,
+    backgroundColor: (settings && settings.lightMode) ? '#f0f2f5' : '#1a1a2e',
     frame: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -87,6 +149,25 @@ function createWindow() {
     },
     title: 'CW CAT',
   });
+
+  // Restore maximized state after window is ready
+  if (useSaved && saved.isMaximized) {
+    win.maximize();
+  }
+
+  // Track restored bounds for saving when maximized
+  win._restoredBounds = useSaved ? { x: saved.x, y: saved.y, width: saved.width, height: saved.height } : null;
+
+  win.on('resize', () => {
+    if (!win.isMaximized()) win._restoredBounds = win.getBounds();
+    saveWindowState();
+  });
+  win.on('move', () => {
+    if (!win.isMaximized()) win._restoredBounds = win.getBounds();
+    saveWindowState();
+  });
+  win.on('maximize', () => saveWindowState());
+  win.on('unmaximize', () => saveWindowState());
 
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 
@@ -107,7 +188,7 @@ function startDspWorker() {
     switch (msg.type) {
       case 'ready':
         dspWorkerReady = true;
-        console.log('[DSP] Worker ready');
+        sendLog('[DSP] Worker ready');
         break;
 
       case 'spectrum':
@@ -151,12 +232,12 @@ function startDspWorker() {
   });
 
   dspWorker.on('error', (err) => {
-    console.error('[DSP] Worker error:', err);
+    sendLog(`[DSP] Worker error: ${err.message || err}`);
     dspWorkerReady = false;
   });
 
   dspWorker.on('exit', (code) => {
-    console.log(`[DSP] Worker exited with code ${code}`);
+    sendLog(`[DSP] Worker exited with code ${code}`);
     dspWorker = null;
     dspWorkerReady = false;
   });
@@ -200,10 +281,12 @@ function stopIqPipeline() {
 function handleDecodedSpot(data) {
   if (!settings || !data.callsign) return;
 
-  // Compute absolute frequency: slice center + offset from DSP
+  // Compute absolute frequency: panadapter center + offset from DSP
+  // DSP offsets are relative to the IQ data center (= pan center), NOT the slice frequency
   let centerMHz = 0;
   if (smartSdr) {
-    centerMHz = smartSdr.getSliceFreq(0); // Use first slice as reference
+    centerMHz = smartSdr.getPanCenter();
+    if (centerMHz <= 0) centerMHz = smartSdr.getSliceFreq(0); // fallback
   }
   const freqMHz = centerMHz + (data.freqOffset || 0) / 1e6;
   const freqKhz = freqMHz * 1000;
@@ -229,7 +312,7 @@ function handleDecodedSpot(data) {
     time: new Date().toISOString(),
   };
 
-  console.log(`[SPOT] ${spot.callsign} @ ${freqKhz.toFixed(1)} kHz (${spot.band || '?'}) ${spot.entity} — ${spot.comment} — "${(spot.text || '').slice(-40)}"`);
+  sendLog(`[SPOT] ${spot.callsign} @ ${freqKhz.toFixed(1)} kHz (${spot.band || '?'}) ${spot.entity} — ${spot.comment} — "${(spot.text || '').slice(-40)}"`);
 
   // Record to telemetry
   if (telemetry) telemetry.recordSpot(spot);
@@ -298,7 +381,7 @@ function connectRadio() {
       const word0 = buf.readUInt32BE(0);
       const pktType = (word0 >>> 28) & 0x0F;
       const streamId = buf.length >= 8 ? buf.readUInt32BE(4) : 0;
-      console.log(`[VITA-49] Raw packet #${rawPacketLog}: len=${buf.length}, type=0x${pktType.toString(16)}, streamId=0x${streamId.toString(16).padStart(8, '0')}, word0=0x${word0.toString(16).padStart(8, '0')}`);
+      sendLog(`[VITA-49] Raw packet #${rawPacketLog}: len=${buf.length}, type=0x${pktType.toString(16)}, streamId=0x${streamId.toString(16).padStart(8, '0')}, word0=0x${word0.toString(16).padStart(8, '0')}`);
     }
     origParse(buf);
   };
@@ -307,7 +390,7 @@ function connectRadio() {
   vitaDiagTimer = setInterval(() => {
     if (vitaPacketCount > 0) {
       const stats = vitaReceiver.getStats();
-      console.log(`[VITA-49] pkts=${stats.received}, iq_samples=${vitaIqSamples}, blocks_to_dsp=${vitaBlocksSent}, dropped=${stats.dropped}`);
+      sendLog(`[VITA-49] pkts=${stats.received}, iq_samples=${vitaIqSamples}, blocks_to_dsp=${vitaBlocksSent}, dropped=${stats.dropped}`);
       if (telemetry) telemetry.updatePacketStats(stats.received, stats.dropped);
       vitaPacketCount = 0;
       vitaIqSamples = 0;
@@ -316,18 +399,18 @@ function connectRadio() {
   }, 5000);
 
   vitaReceiver.on('error', (err) => {
-    console.error('[VITA-49] Error:', err);
+    sendLog(`[VITA-49] Error: ${err.message || err}`);
   });
 
   vitaReceiver.on('listening', (udpPort) => {
-    console.log(`[IQ] VITA-49 receiver ready on UDP port ${udpPort}`);
+    sendLog(`[IQ] VITA-49 receiver ready on UDP port ${udpPort}`);
 
     // Now connect to radio with our UDP port
     smartSdr = new SmartSdrClient();
     smartSdr.setUdpPort(udpPort);
 
     smartSdr.on('connected', () => {
-      console.log('[Radio] Connected to SmartSDR');
+      sendLog('[Radio] Connected to SmartSDR');
       sendStatus();
 
       // Wait briefly for subscription status messages to arrive (slices, pans)
@@ -341,18 +424,18 @@ function connectRadio() {
         if (panId) {
           smartSdr.setPanDaxIq(panId, channel);
         } else {
-          console.log('[Radio] WARNING: No panadapter found — DAX IQ may not flow. Assign DAX IQ channel in SmartSDR.');
+          sendLog('[Radio] WARNING: No panadapter found — DAX IQ may not flow. Assign DAX IQ channel in SmartSDR.');
         }
 
         // Log known state
-        console.log(`[Radio] Known panadapters: ${Array.from(smartSdr._panadapters.keys()).join(', ') || 'none'}`);
-        console.log(`[Radio] Known slices: ${Array.from(smartSdr._slices.keys()).join(', ') || 'none'}`);
+        sendLog(`[Radio] Known panadapters: ${Array.from(smartSdr._panadapters.keys()).join(', ') || 'none'}`);
+        sendLog(`[Radio] Known slices: ${Array.from(smartSdr._slices.keys()).join(', ') || 'none'}`);
 
         smartSdr.createDaxIqStream(channel, rate, (err, streamId) => {
           if (err) {
-            console.error('[Radio] Failed to create DAX IQ stream:', err);
+            sendLog(`[Radio] Failed to create DAX IQ stream: ${err}`);
           } else {
-            console.log(`[Radio] DAX IQ stream active: ${streamId}, rate=${rate}`);
+            sendLog(`[Radio] DAX IQ stream active: ${streamId}, rate=${rate}`);
           }
           sendStatus();
         });
@@ -360,16 +443,16 @@ function connectRadio() {
     });
 
     smartSdr.on('disconnected', () => {
-      console.log('[Radio] Disconnected');
+      sendLog('[Radio] Disconnected');
       sendStatus();
     });
 
     smartSdr.on('error', (err) => {
-      console.error('[Radio] Error:', err.message);
+      sendLog(`[Radio] Error: ${err.message}`);
     });
 
-    let lastSentCenterMHz = 0;
     let lastSentPanCenter = 0;
+    let lastLoggedSliceFreq = 0;
     smartSdr.on('slice', (slice) => {
       if (win && !win.isDestroyed()) {
         win.webContents.send('slice-update', slice);
@@ -378,6 +461,11 @@ function connectRadio() {
       const sliceFreq = smartSdr.getSliceFreq(0);
       if (sliceFreq > 0) {
         sendToDspWorker({ type: 'set-slice-freq', sliceFreqMHz: sliceFreq });
+        // Log slice freq changes for diagnostics
+        if (Math.abs(sliceFreq - lastLoggedSliceFreq) > 0.0001) {
+          lastLoggedSliceFreq = sliceFreq;
+          sendLog(`[Radio] Slice A: ${(sliceFreq * 1000).toFixed(1)} kHz | Pan center: ${(lastSentPanCenter * 1000).toFixed(1)} kHz | Offset: ${((sliceFreq - lastSentPanCenter) * 1e6).toFixed(0)} Hz`);
+        }
       }
     });
 
@@ -387,6 +475,7 @@ function connectRadio() {
       if (panCenter > 0 && panCenter !== lastSentPanCenter) {
         lastSentPanCenter = panCenter;
         sendToDspWorker({ type: 'set-center-freq', centerMHz: panCenter });
+        sendLog(`[Radio] Pan center: ${(panCenter * 1000).toFixed(1)} kHz`);
         if (win && !win.isDestroyed()) {
           win.webContents.send('pan-center', panCenter);
         }
@@ -418,8 +507,10 @@ function connectOutputs() {
   if (settings.rbnEnabled && settings.myCallsign) {
     rbn = new RbnClient();
     rbn.on('status', (s) => {
+      sendLog(`[RBN] status: connected=${s.connected}${s.error ? ' error=' + s.error : ''}`);
       if (win && !win.isDestroyed()) win.webContents.send('rbn-status', s);
     });
+    sendLog(`[RBN] Connecting to ${settings.rbnHost}:${settings.rbnPort} as ${settings.myCallsign}`);
     rbn.connect({
       host: settings.rbnHost,
       port: settings.rbnPort,
@@ -432,8 +523,10 @@ function connectOutputs() {
   if (settings.dxClusterEnabled && settings.dxClusterHost && settings.myCallsign) {
     dxCluster = new DxClusterClient();
     dxCluster.on('status', (s) => {
+      sendLog(`[Cluster] status: connected=${s.connected}${s.error ? ' error=' + s.error : ''}`);
       if (win && !win.isDestroyed()) win.webContents.send('cluster-status', s);
     });
+    sendLog(`[Cluster] Connecting to ${settings.dxClusterHost}:${settings.dxClusterPort} as ${settings.myCallsign}`);
     dxCluster.connect({
       host: settings.dxClusterHost,
       port: settings.dxClusterPort,
@@ -532,6 +625,30 @@ ipcMain.on('set-decode-mode', (_e, mode) => {
     saveSettings(settings);
   }
   sendToDspWorker({ type: 'set-mode', mode });
+
+  // Adjust minimum window size for reader mode (smaller) vs skimmer (needs panadapter space)
+  if (win && !win.isDestroyed()) {
+    if (mode === 'reader') {
+      win.setMinimumSize(400, 300);
+    } else {
+      win.setMinimumSize(900, 200);
+    }
+  }
+});
+
+// --- CWX (CW transmit) ---
+ipcMain.on('cwx-send', (_e, text) => {
+  if (smartSdr && smartSdr.connected && text) {
+    smartSdr.cwxSend(text);
+    sendLog(`[CWX] Sending: ${text}`);
+  }
+});
+
+ipcMain.on('cwx-clear', () => {
+  if (smartSdr && smartSdr.connected) {
+    smartSdr.cwxClear();
+    sendLog('[CWX] Buffer cleared');
+  }
 });
 
 ipcMain.handle('get-status', () => {
@@ -551,10 +668,10 @@ autoUpdater.autoDownload = false;
 autoUpdater.autoInstallOnAppQuit = false;
 autoUpdater.allowPrerelease = true;
 autoUpdater.logger = {
-  info: (...args) => console.log('[updater]', ...args),
-  warn: (...args) => console.warn('[updater]', ...args),
-  error: (...args) => console.error('[updater]', ...args),
-  debug: (...args) => console.log('[updater:debug]', ...args),
+  info: (...args) => sendLog(`[updater] ${args.join(' ')}`),
+  warn: (...args) => sendLog(`[updater:warn] ${args.join(' ')}`),
+  error: (...args) => sendLog(`[updater:error] ${args.join(' ')}`),
+  debug: (...args) => sendLog(`[updater:debug] ${args.join(' ')}`),
 };
 
 autoUpdater.on('update-available', (info) => {
@@ -589,10 +706,10 @@ autoUpdater.on('error', (err) => {
   // Suppress ENOENT errors — expected for portable/unpacked builds missing app-update.yml
   const msg = err?.message || String(err);
   if (msg.includes('ENOENT') && msg.includes('app-update.yml')) {
-    console.log('[updater] No app-update.yml — portable build, using GitHub API fallback');
+    sendLog('[updater] No app-update.yml — portable build, using GitHub API fallback');
     return;
   }
-  console.error('autoUpdater error:', err);
+  sendLog(`[updater] Error: ${msg}`);
   if (win && !win.isDestroyed()) {
     win.webContents.send('update-error', msg);
   }
@@ -685,7 +802,7 @@ app.whenReady().then(() => {
   const ctyPath = path.join(__dirname, 'assets', 'cty.dat');
   if (fs.existsSync(ctyPath)) {
     ctyDb = loadCtyDat(ctyPath);
-    console.log(`[CTY] Loaded ${ctyDb.entities.length} entities`);
+    sendLog(`[CTY] Loaded ${ctyDb.entities.length} entities`);
   }
 
   settings = loadSettings();

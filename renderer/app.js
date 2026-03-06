@@ -8,6 +8,11 @@ function isLightTheme() {
 
 function applyTheme(light) {
   document.documentElement.setAttribute('data-theme', light ? 'light' : 'dark');
+  // Invalidate cached CSS values (theme changed)
+  if (typeof renderSpectrum !== 'undefined') {
+    renderSpectrum._canvasBg = null;
+    renderSpectrum._gridColor = null;
+  }
   // Clear waterfall when switching themes (colormap changes)
   if (typeof waterfallCtx !== 'undefined' && waterfallCtx) {
     try { waterfallCtx.clearRect(0, 0, waterfallCanvas.width, waterfallCanvas.height); } catch {}
@@ -124,15 +129,28 @@ function renderSpectrum(data) {
   const w = spectrumCanvas.width;
   const h = spectrumCanvas.height;
 
-  // Clear
-  spectrumCtx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--canvas-bg').trim();
+  // Clear (cache computed style to avoid forced recalc every frame)
+  if (!renderSpectrum._canvasBg) {
+    renderSpectrum._canvasBg = getComputedStyle(document.documentElement).getPropertyValue('--canvas-bg').trim();
+  }
+  spectrumCtx.fillStyle = renderSpectrum._canvasBg;
   spectrumCtx.fillRect(0, 0, w, h);
 
   // Auto-scale using percentile-based approach:
   // The noise floor (median) should sit in the lower part of the colormap,
   // so CW signals pop up into the yellow/white range.
-  const sorted = Array.from(mags).filter(v => v > -300 && v < 300).sort((a, b) => a - b);
-  const len = sorted.length;
+  // Reuse a sort buffer to avoid allocating new arrays every frame.
+  if (!renderSpectrum._sortBuf || renderSpectrum._sortBuf.length < N) {
+    renderSpectrum._sortBuf = new Float64Array(N);
+  }
+  const sortBuf = renderSpectrum._sortBuf;
+  let len = 0;
+  for (let i = 0; i < N; i++) {
+    const v = mags[i];
+    if (v > -300 && v < 300) sortBuf[len++] = v;
+  }
+  const sorted = sortBuf.subarray(0, len);
+  sorted.sort();
   if (len === 0) return;
 
   const p10 = sorted[Math.floor(len * 0.10)]; // 10th percentile (band edge rolloff)
@@ -162,13 +180,19 @@ function renderSpectrum(data) {
   const dbMax = autoDbMax;
   const dbRange = dbMax - dbMin;
 
-  // Draw grid lines with dB labels
+  // Draw grid lines with dB labels (cache CSS colors to avoid per-frame style recalc)
   const gridStep = dbRange > 60 ? 20 : 10;
   const gridStart = Math.ceil(dbMin / gridStep) * gridStep;
-  const cs = getComputedStyle(document.documentElement);
-  spectrumCtx.strokeStyle = cs.getPropertyValue('--spectrum-grid').trim();
+  if (!renderSpectrum._gridColor) {
+    const cs = getComputedStyle(document.documentElement);
+    renderSpectrum._gridColor = cs.getPropertyValue('--spectrum-grid').trim();
+    renderSpectrum._gridText = cs.getPropertyValue('--spectrum-grid-text').trim();
+    renderSpectrum._lineColor = cs.getPropertyValue('--spectrum-line').trim();
+    renderSpectrum._fillColor = cs.getPropertyValue('--spectrum-fill').trim();
+  }
+  spectrumCtx.strokeStyle = renderSpectrum._gridColor;
   spectrumCtx.lineWidth = 1;
-  spectrumCtx.fillStyle = cs.getPropertyValue('--spectrum-grid-text').trim();
+  spectrumCtx.fillStyle = renderSpectrum._gridText;
   spectrumCtx.font = '9px monospace';
   for (let db = gridStart; db <= dbMax; db += gridStep) {
     const y = h - ((db - dbMin) / dbRange) * h;
@@ -180,7 +204,7 @@ function renderSpectrum(data) {
   }
 
   // Draw spectrum line
-  spectrumCtx.strokeStyle = cs.getPropertyValue('--spectrum-line').trim();
+  spectrumCtx.strokeStyle = renderSpectrum._lineColor;
   spectrumCtx.lineWidth = 1;
   spectrumCtx.beginPath();
 
@@ -197,7 +221,7 @@ function renderSpectrum(data) {
   spectrumCtx.lineTo(w, h);
   spectrumCtx.lineTo(0, h);
   spectrumCtx.closePath();
-  spectrumCtx.fillStyle = cs.getPropertyValue('--spectrum-fill').trim();
+  spectrumCtx.fillStyle = renderSpectrum._fillColor;
   spectrumCtx.fill();
 
   // Update label
@@ -218,12 +242,14 @@ function renderWaterfallRow(mags, dbMin, dbMax) {
 
   if (w === 0 || h === 0) return;
 
-  // Scroll existing waterfall down by 1 pixel
-  const imageData = waterfallCtx.getImageData(0, 0, w, h - 1);
-  waterfallCtx.putImageData(imageData, 0, 1);
+  // Scroll existing waterfall down by 1 pixel (GPU-side copy, zero JS allocation)
+  waterfallCtx.drawImage(waterfallCanvas, 0, 0, w, h - 1, 0, 1, w, h - 1);
 
-  // Draw new row at top
-  const row = waterfallCtx.createImageData(w, 1);
+  // Draw new row at top (reuse cached ImageData when canvas width is stable)
+  if (!renderWaterfallRow._row || renderWaterfallRow._row.width !== w) {
+    renderWaterfallRow._row = waterfallCtx.createImageData(w, 1);
+  }
+  const row = renderWaterfallRow._row;
   const dbRange = dbMax - dbMin;
 
   for (let x = 0; x < w; x++) {
@@ -275,14 +301,22 @@ function renderWaterfallRow(mags, dbMin, dbMax) {
   waterfallCtx.putImageData(row, 0, 0);
 }
 
+// Cache key for freq axis to avoid DOM thrashing every frame
+let _freqAxisKey = '';
+let _freqAxisLabels = [];
+
 function renderFreqAxis(data) {
   if (!data || !data.sampleRate) return;
   const axis = freqAxis;
-  const w = axis.clientWidth;
-  const halfBw = data.sampleRate / 2;
 
-  // Create frequency labels
+  // Build a cache key — only rebuild DOM when something actually changed
+  const key = `${data.sampleRate}|${currentMode}|${panCenterMHz.toFixed(4)}`;
+  if (key === _freqAxisKey) return;
+  _freqAxisKey = key;
+
+  // Create frequency labels (only runs on mode/freq/rate change, not every frame)
   axis.innerHTML = '';
+  _freqAxisLabels = [];
   const numLabels = 10;
   for (let i = 0; i <= numLabels; i++) {
     const frac = i / numLabels;
@@ -305,6 +339,7 @@ function renderFreqAxis(data) {
       label.textContent = (freqOffset / 1000).toFixed(1) + 'k';
     }
     axis.appendChild(label);
+    _freqAxisLabels.push(label);
   }
 }
 
@@ -407,6 +442,14 @@ async function loadSettingsUi() {
   document.getElementById('set-min-wpm').value = settings.minWpm || 8;
   document.getElementById('set-max-wpm').value = settings.maxWpm || 60;
   document.getElementById('set-light-mode').checked = !!settings.lightMode;
+
+  // CWX Macros
+  const macros = settings.cwxMacros || DEFAULT_MACROS;
+  for (let i = 0; i < 5; i++) {
+    const m = macros[i] || DEFAULT_MACROS[i];
+    document.getElementById(`set-macro-label-${i}`).value = m.label || '';
+    document.getElementById(`set-macro-text-${i}`).value = m.text || '';
+  }
 }
 
 async function saveSettingsUi() {
@@ -430,16 +473,22 @@ async function saveSettingsUi() {
     minWpm: parseInt(document.getElementById('set-min-wpm').value) || 8,
     maxWpm: parseInt(document.getElementById('set-max-wpm').value) || 60,
     lightMode: document.getElementById('set-light-mode').checked,
+    cwxMacros: Array.from({ length: 5 }, (_, i) => ({
+      label: document.getElementById(`set-macro-label-${i}`).value.trim() || DEFAULT_MACROS[i].label,
+      text: document.getElementById(`set-macro-text-${i}`).value.trim() || DEFAULT_MACROS[i].text,
+    })),
   };
 
   await window.api.saveSettings(newSettings);
   settings = newSettings;
 
-  // Apply theme and sync header toggle
+  // Apply theme
   applyTheme(newSettings.lightMode);
-  document.getElementById('theme-toggle').checked = !!newSettings.lightMode;
 
   settingsOverlay.classList.remove('open');
+
+  // Update macro button labels
+  loadMacroButtons();
 }
 
 settingsBtn.addEventListener('click', () => {
@@ -447,10 +496,14 @@ settingsBtn.addEventListener('click', () => {
   settingsOverlay.classList.add('open');
 });
 
+// Live preview theme when toggling in settings
+document.getElementById('set-light-mode').addEventListener('change', (e) => {
+  applyTheme(e.target.checked);
+});
+
 settingsCancel.addEventListener('click', () => {
   // Revert theme if changed in settings but not saved
   applyTheme(!!settings.lightMode);
-  document.getElementById('theme-toggle').checked = !!settings.lightMode;
   settingsOverlay.classList.remove('open');
 });
 
@@ -460,9 +513,79 @@ settingsSave.addEventListener('click', saveSettingsUi);
 settingsOverlay.addEventListener('click', (e) => {
   if (e.target === settingsOverlay) {
     applyTheme(!!settings.lightMode);
-    document.getElementById('theme-toggle').checked = !!settings.lightMode;
     settingsOverlay.classList.remove('open');
   }
+});
+
+// --- CWX (CW transmit) ---
+const cwxInput = document.getElementById('cwx-input');
+const cwxSendBtn = document.getElementById('cwx-send-btn');
+const cwxClearBtn = document.getElementById('cwx-clear-btn');
+const cwxMacros = document.getElementById('cwx-macros');
+
+const DEFAULT_MACROS = [
+  { label: 'CQ', text: 'CQ CQ CQ DE {MYCALL} {MYCALL} K' },
+  { label: 'Exchange', text: '5NN 5NN' },
+  { label: 'TU', text: 'RR TU GA UR 5NN 5NN PA' },
+  { label: 'My Call', text: '{MYCALL} {MYCALL}' },
+  { label: '73', text: '73 DE {MYCALL} SK' },
+];
+
+function expandMacro(text) {
+  const call = (settings.myCallsign || '').toUpperCase();
+  return text.replace(/\{MYCALL\}/gi, call);
+}
+
+function sendCwxText(text) {
+  if (!text) return;
+  const expanded = expandMacro(text);
+  window.api.cwxSend(expanded);
+}
+
+function loadMacroButtons() {
+  const macros = settings.cwxMacros || DEFAULT_MACROS;
+  for (let i = 0; i < 5; i++) {
+    const m = macros[i] || DEFAULT_MACROS[i];
+    const label = document.getElementById(`macro-label-${i}`);
+    if (label) label.textContent = m.label || `F${i + 1}`;
+  }
+}
+
+// Macro button clicks
+cwxMacros.addEventListener('click', (e) => {
+  const btn = e.target.closest('.cwx-macro-btn');
+  if (!btn) return;
+  const idx = parseInt(btn.dataset.macro);
+  const macros = settings.cwxMacros || DEFAULT_MACROS;
+  const m = macros[idx] || DEFAULT_MACROS[idx];
+  if (m && m.text) sendCwxText(m.text);
+});
+
+// CWX input send
+cwxSendBtn.addEventListener('click', () => {
+  const text = cwxInput.value.trim();
+  if (text) {
+    sendCwxText(text);
+    cwxInput.value = '';
+  }
+  cwxInput.focus();
+});
+
+cwxInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    cwxSendBtn.click();
+  }
+});
+
+// CWX stop/clear
+cwxClearBtn.addEventListener('click', () => {
+  window.api.cwxClear();
+});
+
+// Reader clear decoded text
+document.getElementById('reader-clear-btn').addEventListener('click', () => {
+  readerText.textContent = '';
 });
 
 // --- Mode toggle (Skimmer / Reader) ---
@@ -489,12 +612,19 @@ function cleanReaderText(text) {
   return text;
 }
 
+// Timestamp of last mode switch — used to suppress stale decode messages from the previous mode
+let modeSwitchTime = 0;
+const MODE_SWITCH_SETTLE_MS = 500; // Ignore decodes for 500ms after switching modes
+
 function setDecodeMode(mode) {
   currentMode = mode;
   modeToggle.checked = mode === 'reader';
+  modeSwitchTime = Date.now();
 
   // Clear waterfall when switching modes (zoom level changes)
   try { waterfallCtx.clearRect(0, 0, waterfallCanvas.width, waterfallCanvas.height); } catch {}
+
+  document.body.classList.toggle('reader-active', mode === 'reader');
 
   if (mode === 'reader') {
     bottomContent.style.display = 'none';
@@ -521,13 +651,7 @@ modeToggle.addEventListener('change', (e) => {
   setDecodeMode(e.target.checked ? 'reader' : 'skimmer');
 });
 
-// --- Theme toggle (header) ---
-document.getElementById('theme-toggle').addEventListener('change', async (e) => {
-  const light = e.target.checked;
-  applyTheme(light);
-  settings.lightMode = light;
-  await window.api.saveSettings(settings);
-});
+// --- Theme toggle moved to Settings panel (set-light-mode checkbox) ---
 
 // --- Settings footer links ---
 document.getElementById('coffee-link').addEventListener('click', (e) => {
@@ -577,6 +701,9 @@ window.api.onSignals((signals) => {
 });
 
 window.api.onDecode((data) => {
+  // Suppress stale decode messages that arrive during mode transition
+  if (Date.now() - modeSwitchTime < MODE_SWITCH_SETTLE_MS) return;
+
   if (currentMode === 'reader') {
     // Reader mode: show cleaned decoded text in the reader panel
     readerText.textContent = cleanReaderText(data.text || '');
@@ -751,23 +878,63 @@ document.getElementById('tb-min').addEventListener('click', () => window.api.min
 document.getElementById('tb-max').addEventListener('click', () => window.api.maximize());
 document.getElementById('tb-close').addEventListener('click', () => window.api.close());
 
+// --- Log panel ---
+(function setupLogPanel() {
+  const logPanel = document.getElementById('log-panel');
+  const logOutput = document.getElementById('log-output');
+  const logToggleBtn = document.getElementById('log-toggle');
+  const logCopyBtn = document.getElementById('log-copy');
+  const logClearBtn = document.getElementById('log-clear');
+
+  const logLines = [];
+  const LOG_MAX = 500;
+
+  window.api.onLog((msg) => {
+    logLines.push(msg);
+    if (logLines.length > LOG_MAX) logLines.shift();
+    logOutput.value = logLines.join('\n');
+    logOutput.scrollTop = logOutput.scrollHeight;
+  });
+
+  logToggleBtn.addEventListener('click', () => {
+    const isHidden = logPanel.classList.toggle('hidden');
+    logToggleBtn.classList.toggle('active', !isHidden);
+    document.body.classList.toggle('log-open', !isHidden);
+  });
+
+  logCopyBtn.addEventListener('click', () => {
+    navigator.clipboard.writeText(logOutput.value).then(() => {
+      logCopyBtn.textContent = 'Copied!';
+      setTimeout(() => { logCopyBtn.textContent = 'Copy'; }, 1500);
+    });
+  });
+
+  logClearBtn.addEventListener('click', () => {
+    logLines.length = 0;
+    logOutput.value = '';
+  });
+})();
+
 // --- Initialization ---
 async function init() {
   settings = await window.api.getSettings();
 
   // Apply saved theme
   applyTheme(!!settings.lightMode);
-  document.getElementById('theme-toggle').checked = !!settings.lightMode;
 
   // Restore decode mode
   const savedMode = settings.decodeMode || 'skimmer';
   currentMode = savedMode;
   modeToggle.checked = savedMode === 'reader';
   if (savedMode === 'reader') {
+    document.body.classList.add('reader-active');
     bottomContent.style.display = 'none';
     readerPanel.style.display = 'flex';
     tuningLine.style.display = 'block';
   }
+
+  // Load macro buttons
+  loadMacroButtons();
 
   const status = await window.api.getStatus();
   if (status) updateStatus(status);

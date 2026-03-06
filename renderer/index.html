@@ -38,11 +38,6 @@
         <div class="switch"><input type="checkbox" id="mode-toggle"><span class="switch-slider"></span></div>
         <span>Reader</span>
       </label>
-      <label class="switch-label compact" title="Toggle light/dark mode">
-        <span>Dark</span>
-        <div class="switch"><input type="checkbox" id="theme-toggle"><span class="switch-slider"></span></div>
-        <span>Light</span>
-      </label>
       <button class="settings-btn" id="settings-btn" title="Settings">&#9881;</button>
       <div class="titlebar-controls">
         <button class="titlebar-btn" id="tb-min" title="Minimize">&#x2014;</button>
@@ -149,7 +144,45 @@
       <div class="reader-text-container">
         <pre class="reader-text" id="reader-text"></pre>
       </div>
+
+      <!-- CWX Macro buttons -->
+      <div class="cwx-macros" id="cwx-macros">
+        <button class="cwx-macro-btn" data-macro="0" title="F1">
+          <span class="macro-label" id="macro-label-0">CQ</span>
+        </button>
+        <button class="cwx-macro-btn" data-macro="1" title="F2">
+          <span class="macro-label" id="macro-label-1">Exchange</span>
+        </button>
+        <button class="cwx-macro-btn" data-macro="2" title="F3">
+          <span class="macro-label" id="macro-label-2">TU</span>
+        </button>
+        <button class="cwx-macro-btn" data-macro="3" title="F4">
+          <span class="macro-label" id="macro-label-3">My Call</span>
+        </button>
+        <button class="cwx-macro-btn" data-macro="4" title="F5">
+          <span class="macro-label" id="macro-label-4">73</span>
+        </button>
+      </div>
+
+      <!-- CWX text input -->
+      <div class="cwx-input-bar">
+        <input type="text" class="cwx-input" id="cwx-input" placeholder="Type CW text to send..." autocomplete="off" spellcheck="false">
+        <button class="cwx-send-btn" id="cwx-send-btn">Send</button>
+        <button class="cwx-clear-btn" id="cwx-clear-btn" title="Clear CWX buffer / stop sending">Stop</button>
+      </div>
     </div>
+  </div>
+
+  <!-- Log panel -->
+  <div id="log-panel" class="log-panel hidden">
+    <div class="log-header">
+      <span>Log</span>
+      <div>
+        <button id="log-copy" title="Copy log to clipboard">Copy</button>
+        <button id="log-clear" title="Clear log">Clear</button>
+      </div>
+    </div>
+    <textarea id="log-output" readonly></textarea>
   </div>
 
   <!-- Status bar -->
@@ -158,6 +191,7 @@
       <span id="status-text">Idle</span>
     </div>
     <div class="status-bar-right">
+      <button id="log-toggle" class="log-toggle-btn" title="Toggle log panel">Log</button>
       <span id="spot-total">Total: 0</span>
     </div>
   </div>
@@ -258,10 +292,59 @@
       </div>
 
       <div class="settings-group">
+        <h3>CWX Macros</h3>
+        <div class="settings-hint">Configure the 5 macro buttons in Reader mode. Use {MYCALL} for your callsign.</div>
+        <div class="settings-row">
+          <label>F1 Label</label>
+          <input type="text" id="set-macro-label-0" placeholder="CQ">
+        </div>
+        <div class="settings-row">
+          <label>F1 Text</label>
+          <input type="text" id="set-macro-text-0" placeholder="CQ CQ CQ DE {MYCALL} {MYCALL} K">
+        </div>
+        <div class="settings-row">
+          <label>F2 Label</label>
+          <input type="text" id="set-macro-label-1" placeholder="Exchange">
+        </div>
+        <div class="settings-row">
+          <label>F2 Text</label>
+          <input type="text" id="set-macro-text-1" placeholder="5NN 5NN">
+        </div>
+        <div class="settings-row">
+          <label>F3 Label</label>
+          <input type="text" id="set-macro-label-2" placeholder="TU">
+        </div>
+        <div class="settings-row">
+          <label>F3 Text</label>
+          <input type="text" id="set-macro-text-2" placeholder="RR TU GA UR 5NN 5NN PA">
+        </div>
+        <div class="settings-row">
+          <label>F4 Label</label>
+          <input type="text" id="set-macro-label-3" placeholder="My Call">
+        </div>
+        <div class="settings-row">
+          <label>F4 Text</label>
+          <input type="text" id="set-macro-text-3" placeholder="{MYCALL} {MYCALL}">
+        </div>
+        <div class="settings-row">
+          <label>F5 Label</label>
+          <input type="text" id="set-macro-label-4" placeholder="73">
+        </div>
+        <div class="settings-row">
+          <label>F5 Text</label>
+          <input type="text" id="set-macro-text-4" placeholder="73 DE {MYCALL} SK">
+        </div>
+      </div>
+
+      <div class="settings-group">
         <h3>Appearance</h3>
         <div class="settings-row">
-          <label>Light Mode</label>
-          <input type="checkbox" id="set-light-mode">
+          <label>Theme</label>
+          <label class="switch-label compact">
+            <span>Dark</span>
+            <div class="switch"><input type="checkbox" id="set-light-mode"><span class="switch-slider"></span></div>
+            <span>Light</span>
+          </label>
         </div>
       </div>
 
