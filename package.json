@@ -43,7 +43,7 @@
       ]
     },
     "nsis": {
-      "artifactName": "${productName}-Setup-${version}.${ext}",
+      "artifactName": "CW-CAT-Setup-${version}.${ext}",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "perMachine": false,
@@ -52,7 +52,7 @@
       "shortcutName": "CW CAT"
     },
     "portable": {
-      "artifactName": "${productName}-${version}-portable.${ext}"
+      "artifactName": "CW-CAT-${version}-portable.${ext}"
     },
     "publish": {
       "provider": "github",
