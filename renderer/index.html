@@ -93,11 +93,15 @@
       <div class="spectrum-canvas-container">
         <canvas id="spectrum-canvas"></canvas>
         <canvas id="waterfall-canvas"></canvas>
+        <div class="spectrum-divider" id="spectrum-divider"></div>
         <div class="spectrum-label" id="spectrum-label"></div>
         <div class="tuning-line" id="tuning-line"></div>
       </div>
       <div class="freq-axis" id="freq-axis"></div>
     </div>
+
+    <!-- Drag divider between spectrum and bottom panels -->
+    <div class="panel-divider" id="panel-divider"></div>
 
     <!-- Bottom: signals table + decoders -->
     <div class="bottom-content">
@@ -240,6 +244,11 @@
           <label>Grid Square</label>
           <input type="text" id="set-grid" placeholder="FN31">
         </div>
+        <div class="settings-row">
+          <label>State / Exchange</label>
+          <input type="text" id="set-state" placeholder="PA">
+        </div>
+        <div class="settings-hint">Used in CWX macros as {STATE} — your state, section, or contest exchange.</div>
       </div>
 
       <div class="settings-group">
@@ -293,7 +302,7 @@
 
       <div class="settings-group">
         <h3>CWX Macros</h3>
-        <div class="settings-hint">Configure the 5 macro buttons in Reader mode. Use {MYCALL} for your callsign.</div>
+        <div class="settings-hint">Configure the 5 macro buttons in Reader mode. Use {MYCALL} for your callsign and {STATE} for your state/exchange.</div>
         <div class="settings-row">
           <label>F1 Label</label>
           <input type="text" id="set-macro-label-0" placeholder="CQ">
@@ -316,7 +325,7 @@
         </div>
         <div class="settings-row">
           <label>F3 Text</label>
-          <input type="text" id="set-macro-text-2" placeholder="RR TU GA UR 5NN 5NN PA">
+          <input type="text" id="set-macro-text-2" placeholder="RR TU GA UR 5NN 5NN {STATE} {STATE}">
         </div>
         <div class="settings-row">
           <label>F4 Label</label>
@@ -346,6 +355,15 @@
             <span>Light</span>
           </label>
         </div>
+        <div class="settings-row">
+          <label>Show Spectrum</label>
+          <input type="checkbox" id="set-show-spectrum">
+        </div>
+        <div class="settings-row">
+          <label>Show Waterfall</label>
+          <input type="checkbox" id="set-show-waterfall">
+        </div>
+        <div class="settings-hint">Drag the divider between spectrum and waterfall to resize. Hiding either saves CPU.</div>
       </div>
 
       <div class="settings-buttons">
@@ -354,7 +372,7 @@
       </div>
 
       <div class="settings-footer">
-        <div class="settings-version" id="settings-version">v0.2.0-beta.1 &mdash; Casey Stanton, K3SBP</div>
+        <div class="settings-version" id="settings-version">v0.2.0-beta.2 &mdash; Casey Stanton, K3SBP</div>
         <div class="settings-coffee"><a href="#" id="coffee-link">Buy Me a Coffee</a></div>
         <div class="settings-links">
           <a href="#" id="discord-link">Discord</a>

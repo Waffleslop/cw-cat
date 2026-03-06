@@ -178,12 +178,12 @@ body {
 
 /* Spectrum/Waterfall panel */
 .spectrum-panel {
-  height: 300px;
-  min-height: 150px;
+  min-height: 80px;
   display: flex;
   flex-direction: column;
   border-bottom: 1px solid var(--border);
   position: relative;
+  flex-shrink: 0;
 }
 
 .spectrum-canvas-container {
@@ -208,6 +208,24 @@ body {
   z-index: 0;
 }
 
+/* Drag divider between spectrum and waterfall */
+.spectrum-divider {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 5px;
+  margin-top: -2px;
+  cursor: ns-resize;
+  z-index: 4;
+  background: transparent;
+}
+
+.spectrum-divider:hover,
+.spectrum-divider.dragging {
+  background: var(--accent);
+  opacity: 0.5;
+}
+
 .spectrum-label {
   position: absolute;
   bottom: 4px;
@@ -217,6 +235,12 @@ body {
   z-index: 2;
   pointer-events: none;
 }
+
+/* Hidden spectrum/waterfall states */
+body.no-spectrum #spectrum-canvas { display: none; }
+body.no-waterfall #waterfall-canvas { display: none; }
+body.no-spectrum.no-waterfall .spectrum-panel { display: none; }
+body.no-spectrum.no-waterfall .panel-divider { display: none; }
 
 .tuning-line {
   display: none;
@@ -596,6 +620,22 @@ table.signals-table tr.new-spot {
   font-size: 11px;
   max-height: 32px;
   overflow: hidden;
+}
+
+/* Drag divider between spectrum panel and bottom content */
+.panel-divider {
+  height: 5px;
+  cursor: ns-resize;
+  background: transparent;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 5;
+}
+
+.panel-divider:hover,
+.panel-divider.dragging {
+  background: var(--accent);
+  opacity: 0.5;
 }
 
 /* Bottom content area split */

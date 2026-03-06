@@ -25,6 +25,10 @@ let spots = []; // Array of decoded spot objects
 let activeDecoders = new Map(); // freqOffset → { text, wpm, snr }
 let spectrumData = null;
 let currentMode = 'skimmer'; // 'skimmer' or 'reader'
+let showSpectrum = true;
+let showWaterfall = true;
+let spectrumRatio = 0.4; // fraction of panel height for spectrum (0-1)
+let panelHeight = 300; // spectrum panel height in pixels
 let sliceFreqMHz = 0; // Current Slice A frequency in MHz
 let panCenterMHz = 0; // Panadapter center frequency (actual IQ data center)
 
@@ -47,6 +51,8 @@ const waterfallCanvas = document.getElementById('waterfall-canvas');
 const spectrumLabel = document.getElementById('spectrum-label');
 const freqAxis = document.getElementById('freq-axis');
 
+const spectrumPanel = document.querySelector('.spectrum-panel');
+const panelDivider = document.getElementById('panel-divider');
 const modeToggle = document.getElementById('mode-toggle');
 const bottomContent = document.querySelector('.bottom-content');
 const readerPanel = document.getElementById('reader-panel');
@@ -84,14 +90,39 @@ setInterval(updateClock, 1000);
 updateClock();
 
 // --- Canvas resize ---
+const spectrumDivider = document.getElementById('spectrum-divider');
+
 function resizeCanvases() {
+  // Apply spectrum panel height
+  spectrumPanel.style.height = panelHeight + 'px';
+
   const container = spectrumCanvas.parentElement;
   const w = container.clientWidth;
   const h = container.clientHeight;
 
-  // Spectrum takes top 40%, waterfall takes bottom 60%
-  const specH = Math.floor(h * 0.4);
-  const wfH = h - specH;
+  // Apply visibility
+  document.body.classList.toggle('no-spectrum', !showSpectrum);
+  document.body.classList.toggle('no-waterfall', !showWaterfall);
+
+  let specH, wfH;
+  if (showSpectrum && showWaterfall) {
+    specH = Math.floor(h * spectrumRatio);
+    wfH = h - specH;
+    spectrumDivider.style.display = '';
+    spectrumDivider.style.top = specH + 'px';
+  } else if (showSpectrum) {
+    specH = h;
+    wfH = 0;
+    spectrumDivider.style.display = 'none';
+  } else if (showWaterfall) {
+    specH = 0;
+    wfH = h;
+    spectrumDivider.style.display = 'none';
+  } else {
+    specH = 0;
+    wfH = 0;
+    spectrumDivider.style.display = 'none';
+  }
 
   spectrumCanvas.width = w;
   spectrumCanvas.height = specH;
@@ -106,9 +137,72 @@ function resizeCanvases() {
 window.addEventListener('resize', resizeCanvases);
 resizeCanvases();
 
+// --- Spectrum / Waterfall divider drag ---
+(function setupDividerDrag() {
+  let dragging = false;
+
+  spectrumDivider.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    dragging = true;
+    spectrumDivider.classList.add('dragging');
+  });
+
+  window.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    const container = spectrumCanvas.parentElement;
+    const rect = container.getBoundingClientRect();
+    const y = e.clientY - rect.top;
+    spectrumRatio = Math.max(0.1, Math.min(0.9, y / rect.height));
+    resizeCanvases();
+  });
+
+  window.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    spectrumDivider.classList.remove('dragging');
+    // Persist ratio to settings
+    if (settings) {
+      settings.spectrumRatio = spectrumRatio;
+      window.api.saveSettings(settings);
+    }
+  });
+})();
+
+// --- Panel divider drag (spectrum panel vs bottom content) ---
+(function setupPanelDividerDrag() {
+  let dragging = false;
+
+  panelDivider.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    dragging = true;
+    panelDivider.classList.add('dragging');
+  });
+
+  window.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    const mainContent = spectrumPanel.parentElement;
+    const rect = mainContent.getBoundingClientRect();
+    const y = e.clientY - rect.top;
+    panelHeight = Math.max(80, Math.min(rect.height - 100, y));
+    resizeCanvases();
+  });
+
+  window.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    panelDivider.classList.remove('dragging');
+    // Persist to settings
+    if (settings) {
+      settings.panelHeight = panelHeight;
+      window.api.saveSettings(settings);
+    }
+  });
+})();
+
 // --- Spectrum rendering ---
 function renderSpectrum(data) {
   if (!data || !data.magnitudes) return;
+  if (!showSpectrum && !showWaterfall) return;
 
   let mags = data.magnitudes;
   let effectiveSampleRate = data.sampleRate;
@@ -128,13 +222,6 @@ function renderSpectrum(data) {
   const N = mags.length;
   const w = spectrumCanvas.width;
   const h = spectrumCanvas.height;
-
-  // Clear (cache computed style to avoid forced recalc every frame)
-  if (!renderSpectrum._canvasBg) {
-    renderSpectrum._canvasBg = getComputedStyle(document.documentElement).getPropertyValue('--canvas-bg').trim();
-  }
-  spectrumCtx.fillStyle = renderSpectrum._canvasBg;
-  spectrumCtx.fillRect(0, 0, w, h);
 
   // Auto-scale using percentile-based approach:
   // The noise floor (median) should sit in the lower part of the colormap,
@@ -180,58 +267,62 @@ function renderSpectrum(data) {
   const dbMax = autoDbMax;
   const dbRange = dbMax - dbMin;
 
-  // Draw grid lines with dB labels (cache CSS colors to avoid per-frame style recalc)
-  const gridStep = dbRange > 60 ? 20 : 10;
-  const gridStart = Math.ceil(dbMin / gridStep) * gridStep;
-  if (!renderSpectrum._gridColor) {
-    const cs = getComputedStyle(document.documentElement);
-    renderSpectrum._gridColor = cs.getPropertyValue('--spectrum-grid').trim();
-    renderSpectrum._gridText = cs.getPropertyValue('--spectrum-grid-text').trim();
-    renderSpectrum._lineColor = cs.getPropertyValue('--spectrum-line').trim();
-    renderSpectrum._fillColor = cs.getPropertyValue('--spectrum-fill').trim();
-  }
-  spectrumCtx.strokeStyle = renderSpectrum._gridColor;
-  spectrumCtx.lineWidth = 1;
-  spectrumCtx.fillStyle = renderSpectrum._gridText;
-  spectrumCtx.font = '9px monospace';
-  for (let db = gridStart; db <= dbMax; db += gridStep) {
-    const y = h - ((db - dbMin) / dbRange) * h;
+  // Draw spectrum canvas (skip when hidden for CPU savings)
+  if (showSpectrum) {
+    if (!renderSpectrum._canvasBg) {
+      renderSpectrum._canvasBg = getComputedStyle(document.documentElement).getPropertyValue('--canvas-bg').trim();
+    }
+    spectrumCtx.fillStyle = renderSpectrum._canvasBg;
+    spectrumCtx.fillRect(0, 0, w, h);
+
+    const gridStep = dbRange > 60 ? 20 : 10;
+    const gridStart = Math.ceil(dbMin / gridStep) * gridStep;
+    if (!renderSpectrum._gridColor) {
+      const cs = getComputedStyle(document.documentElement);
+      renderSpectrum._gridColor = cs.getPropertyValue('--spectrum-grid').trim();
+      renderSpectrum._gridText = cs.getPropertyValue('--spectrum-grid-text').trim();
+      renderSpectrum._lineColor = cs.getPropertyValue('--spectrum-line').trim();
+      renderSpectrum._fillColor = cs.getPropertyValue('--spectrum-fill').trim();
+    }
+    spectrumCtx.strokeStyle = renderSpectrum._gridColor;
+    spectrumCtx.lineWidth = 1;
+    spectrumCtx.fillStyle = renderSpectrum._gridText;
+    spectrumCtx.font = '9px monospace';
+    for (let db = gridStart; db <= dbMax; db += gridStep) {
+      const y = h - ((db - dbMin) / dbRange) * h;
+      spectrumCtx.beginPath();
+      spectrumCtx.moveTo(0, y);
+      spectrumCtx.lineTo(w, y);
+      spectrumCtx.stroke();
+      spectrumCtx.fillText(`${Math.round(db)} dB`, 3, y - 2);
+    }
+
+    spectrumCtx.strokeStyle = renderSpectrum._lineColor;
+    spectrumCtx.lineWidth = 1;
     spectrumCtx.beginPath();
-    spectrumCtx.moveTo(0, y);
-    spectrumCtx.lineTo(w, y);
+    for (let i = 0; i < N; i++) {
+      const x = (i / N) * w;
+      const db = Math.max(dbMin, Math.min(dbMax, mags[i]));
+      const y = h - ((db - dbMin) / dbRange) * h;
+      if (i === 0) spectrumCtx.moveTo(x, y);
+      else spectrumCtx.lineTo(x, y);
+    }
     spectrumCtx.stroke();
-    spectrumCtx.fillText(`${Math.round(db)} dB`, 3, y - 2);
+    spectrumCtx.lineTo(w, h);
+    spectrumCtx.lineTo(0, h);
+    spectrumCtx.closePath();
+    spectrumCtx.fillStyle = renderSpectrum._fillColor;
+    spectrumCtx.fill();
   }
-
-  // Draw spectrum line
-  spectrumCtx.strokeStyle = renderSpectrum._lineColor;
-  spectrumCtx.lineWidth = 1;
-  spectrumCtx.beginPath();
-
-  for (let i = 0; i < N; i++) {
-    const x = (i / N) * w;
-    const db = Math.max(dbMin, Math.min(dbMax, mags[i]));
-    const y = h - ((db - dbMin) / dbRange) * h;
-    if (i === 0) spectrumCtx.moveTo(x, y);
-    else spectrumCtx.lineTo(x, y);
-  }
-  spectrumCtx.stroke();
-
-  // Fill under the curve
-  spectrumCtx.lineTo(w, h);
-  spectrumCtx.lineTo(0, h);
-  spectrumCtx.closePath();
-  spectrumCtx.fillStyle = renderSpectrum._fillColor;
-  spectrumCtx.fill();
 
   // Update label
   const bw = effectiveSampleRate ? (effectiveSampleRate / 1000).toFixed(0) + ' kHz' : '--';
   spectrumLabel.textContent = `BW: ${bw} | FFT: ${data.fftSize || '--'}`;
 
-  // --- Waterfall ---
-  renderWaterfallRow(mags, dbMin, dbMax);
+  // Waterfall (skip when hidden for CPU savings)
+  if (showWaterfall) renderWaterfallRow(mags, dbMin, dbMax);
 
-  // --- Frequency axis ---
+  // Frequency axis
   renderFreqAxis({ ...data, sampleRate: effectiveSampleRate });
 }
 
@@ -431,6 +522,7 @@ async function loadSettingsUi() {
   document.getElementById('set-sample-rate').value = settings.sampleRate || 192000;
   document.getElementById('set-callsign').value = settings.myCallsign || '';
   document.getElementById('set-grid').value = settings.grid || '';
+  document.getElementById('set-state').value = settings.state || '';
   document.getElementById('set-rbn-enabled').checked = !!settings.rbnEnabled;
   document.getElementById('set-rbn-host').value = settings.rbnHost || 'arcluster.reversebeacon.net';
   document.getElementById('set-rbn-port').value = settings.rbnPort || 7000;
@@ -442,6 +534,8 @@ async function loadSettingsUi() {
   document.getElementById('set-min-wpm').value = settings.minWpm || 8;
   document.getElementById('set-max-wpm').value = settings.maxWpm || 60;
   document.getElementById('set-light-mode').checked = !!settings.lightMode;
+  document.getElementById('set-show-spectrum').checked = settings.showSpectrum !== false;
+  document.getElementById('set-show-waterfall').checked = settings.showWaterfall !== false;
 
   // CWX Macros
   const macros = settings.cwxMacros || DEFAULT_MACROS;
@@ -462,6 +556,7 @@ async function saveSettingsUi() {
     sampleRate: parseInt(document.getElementById('set-sample-rate').value),
     myCallsign: document.getElementById('set-callsign').value.trim().toUpperCase(),
     grid: document.getElementById('set-grid').value.trim(),
+    state: document.getElementById('set-state').value.trim().toUpperCase(),
     rbnEnabled: document.getElementById('set-rbn-enabled').checked,
     rbnHost: document.getElementById('set-rbn-host').value.trim(),
     rbnPort: parseInt(document.getElementById('set-rbn-port').value) || 7000,
@@ -473,6 +568,10 @@ async function saveSettingsUi() {
     minWpm: parseInt(document.getElementById('set-min-wpm').value) || 8,
     maxWpm: parseInt(document.getElementById('set-max-wpm').value) || 60,
     lightMode: document.getElementById('set-light-mode').checked,
+    showSpectrum: document.getElementById('set-show-spectrum').checked,
+    showWaterfall: document.getElementById('set-show-waterfall').checked,
+    spectrumRatio: spectrumRatio,
+    panelHeight: panelHeight,
     cwxMacros: Array.from({ length: 5 }, (_, i) => ({
       label: document.getElementById(`set-macro-label-${i}`).value.trim() || DEFAULT_MACROS[i].label,
       text: document.getElementById(`set-macro-text-${i}`).value.trim() || DEFAULT_MACROS[i].text,
@@ -484,6 +583,11 @@ async function saveSettingsUi() {
 
   // Apply theme
   applyTheme(newSettings.lightMode);
+
+  // Apply spectrum/waterfall visibility
+  showSpectrum = newSettings.showSpectrum !== false;
+  showWaterfall = newSettings.showWaterfall !== false;
+  resizeCanvases();
 
   settingsOverlay.classList.remove('open');
 
@@ -526,14 +630,15 @@ const cwxMacros = document.getElementById('cwx-macros');
 const DEFAULT_MACROS = [
   { label: 'CQ', text: 'CQ CQ CQ DE {MYCALL} {MYCALL} K' },
   { label: 'Exchange', text: '5NN 5NN' },
-  { label: 'TU', text: 'RR TU GA UR 5NN 5NN PA' },
+  { label: 'TU', text: 'RR TU GA UR 5NN 5NN {STATE} {STATE}' },
   { label: 'My Call', text: '{MYCALL} {MYCALL}' },
   { label: '73', text: '73 DE {MYCALL} SK' },
 ];
 
 function expandMacro(text) {
   const call = (settings.myCallsign || '').toUpperCase();
-  return text.replace(/\{MYCALL\}/gi, call);
+  const state = (settings.state || '').toUpperCase();
+  return text.replace(/\{MYCALL\}/gi, call).replace(/\{STATE\}/gi, state);
 }
 
 function sendCwxText(text) {
@@ -932,6 +1037,13 @@ async function init() {
     readerPanel.style.display = 'flex';
     tuningLine.style.display = 'block';
   }
+
+  // Apply spectrum/waterfall visibility and panel size
+  showSpectrum = settings.showSpectrum !== false;
+  showWaterfall = settings.showWaterfall !== false;
+  spectrumRatio = settings.spectrumRatio || 0.4;
+  panelHeight = settings.panelHeight || 300;
+  resizeCanvases();
 
   // Load macro buttons
   loadMacroButtons();

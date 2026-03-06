@@ -825,12 +825,24 @@ parentPort.on('message', (msg) => {
           const oldSlice = sliceFreqMHz;
           sliceFreqMHz = msg.sliceFreqMHz;
           console.log(`[DSP] Slice frequency: ${sliceFreqMHz.toFixed(6)} MHz`);
-          // If in reader mode and slice moved significantly, re-search for signal
+          // If in reader mode and slice moved significantly, full reset and re-search
           if (readerMode && oldSlice > 0 && Math.abs(sliceFreqMHz - oldSlice) > 0.0005) {
-            console.log(`[DSP] Slice retuned — reader re-searching`);
+            console.log(`[DSP] Slice retuned — reader clearing old channel and re-searching`);
+            // Remove old channel completely so stale decode stops immediately
+            if (readerChannelKey !== null) {
+              if (USE_STFT_CHANNELIZER) stftChannelizer.removeChannel(readerChannelKey);
+              channelState.delete(readerChannelKey);
+            }
             readerChannelFreq = null;
             readerChannelKey = null;
             readerSearchCount = 0;
+            // Reset signal detector so noise floor re-adapts to new frequency region
+            if (signalDetector) signalDetector.reset();
+            // Tell renderer to clear reader display
+            parentPort.postMessage({
+              type: 'decode',
+              data: { freqOffset: 0, text: '', wpm: 0, snr: 0 },
+            });
           }
         }
         break;
