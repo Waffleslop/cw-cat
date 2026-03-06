@@ -854,6 +854,16 @@ window.api.onClusterStatus((s) => {
   setDot(clusterDot, s.connected);
 });
 
+window.api.onCwxBlocked(() => {
+  const prev = statusText.textContent;
+  statusText.textContent = 'CWX blocked — turn on Break-in on the radio to transmit';
+  statusText.style.color = 'var(--error, #f44)';
+  setTimeout(() => {
+    statusText.textContent = prev;
+    statusText.style.color = '';
+  }, 4000);
+});
+
 window.api.onSliceUpdate((slice) => {
   const freq = parseFloat(slice.RF_frequency || 0);
   if (freq > 0) {

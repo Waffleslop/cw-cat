@@ -487,6 +487,12 @@ function connectRadio() {
       }
     });
 
+    smartSdr.on('cwx-blocked', () => {
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('cwx-blocked');
+      }
+    });
+
     smartSdr.connect(settings.radioHost, settings.radioPort);
   });
 

@@ -29,6 +29,7 @@ contextBridge.exposeInMainWorld('api', {
   onPanCenter: (cb) => ipcRenderer.on('pan-center', (_e, freqMHz) => cb(freqMHz)),
   onRbnStatus: (cb) => ipcRenderer.on('rbn-status', (_e, s) => cb(s)),
   onClusterStatus: (cb) => ipcRenderer.on('cluster-status', (_e, s) => cb(s)),
+  onCwxBlocked: (cb) => ipcRenderer.on('cwx-blocked', () => cb()),
   onLog: (cb) => ipcRenderer.on('log', (_e, msg) => cb(msg)),
 
   // Window controls
