@@ -473,6 +473,15 @@ table.signals-table tr.new-spot {
   padding-left: 2px;
 }
 
+.settings-subheading {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin: 8px 0 4px 0;
+}
+
 .settings-buttons {
   display: flex;
   justify-content: flex-end;
@@ -1033,9 +1042,7 @@ body.log-open .main-content {
   color: var(--yellow);
 }
 
-.reader-active .spectrum-panel {
-  display: none;
-}
+/* Spectrum panel visibility in reader mode is now controlled per-mode via settings */
 
 .reader-text-container {
   flex: 1;

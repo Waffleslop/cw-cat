@@ -29,6 +29,24 @@ let showSpectrum = true;
 let showWaterfall = true;
 let spectrumRatio = 0.4; // fraction of panel height for spectrum (0-1)
 let panelHeight = 300; // spectrum panel height in pixels
+
+// Helper: apply per-mode display settings to the active variables
+function applyModeDisplaySettings(mode) {
+  const prefix = mode === 'reader' ? 'reader' : 'skimmer';
+  showSpectrum = settings[`${prefix}ShowSpectrum`] !== false;
+  showWaterfall = settings[`${prefix}ShowWaterfall`] !== false;
+  spectrumRatio = settings[`${prefix}SpectrumRatio`] || 0.4;
+  panelHeight = settings[`${prefix}PanelHeight`] || (mode === 'reader' ? 200 : 300);
+}
+
+// Helper: save current display vars back to settings for the active mode
+function saveModeDisplaySettings() {
+  const prefix = currentMode === 'reader' ? 'reader' : 'skimmer';
+  settings[`${prefix}ShowSpectrum`] = showSpectrum;
+  settings[`${prefix}ShowWaterfall`] = showWaterfall;
+  settings[`${prefix}SpectrumRatio`] = spectrumRatio;
+  settings[`${prefix}PanelHeight`] = panelHeight;
+}
 let sliceFreqMHz = 0; // Current Slice A frequency in MHz
 let panCenterMHz = 0; // Panadapter center frequency (actual IQ data center)
 
@@ -160,9 +178,9 @@ resizeCanvases();
     if (!dragging) return;
     dragging = false;
     spectrumDivider.classList.remove('dragging');
-    // Persist ratio to settings
+    // Persist ratio to settings for current mode
     if (settings) {
-      settings.spectrumRatio = spectrumRatio;
+      saveModeDisplaySettings();
       window.api.saveSettings(settings);
     }
   });
@@ -191,9 +209,9 @@ resizeCanvases();
     if (!dragging) return;
     dragging = false;
     panelDivider.classList.remove('dragging');
-    // Persist to settings
+    // Persist to settings for current mode
     if (settings) {
-      settings.panelHeight = panelHeight;
+      saveModeDisplaySettings();
       window.api.saveSettings(settings);
     }
   });
@@ -534,8 +552,10 @@ async function loadSettingsUi() {
   document.getElementById('set-min-wpm').value = settings.minWpm || 8;
   document.getElementById('set-max-wpm').value = settings.maxWpm || 60;
   document.getElementById('set-light-mode').checked = !!settings.lightMode;
-  document.getElementById('set-show-spectrum').checked = settings.showSpectrum !== false;
-  document.getElementById('set-show-waterfall').checked = settings.showWaterfall !== false;
+  document.getElementById('set-skimmer-show-spectrum').checked = settings.skimmerShowSpectrum !== false;
+  document.getElementById('set-skimmer-show-waterfall').checked = settings.skimmerShowWaterfall !== false;
+  document.getElementById('set-reader-show-spectrum').checked = settings.readerShowSpectrum !== false;
+  document.getElementById('set-reader-show-waterfall').checked = settings.readerShowWaterfall !== false;
 
   // CWX Macros
   const macros = settings.cwxMacros || DEFAULT_MACROS;
@@ -568,10 +588,14 @@ async function saveSettingsUi() {
     minWpm: parseInt(document.getElementById('set-min-wpm').value) || 8,
     maxWpm: parseInt(document.getElementById('set-max-wpm').value) || 60,
     lightMode: document.getElementById('set-light-mode').checked,
-    showSpectrum: document.getElementById('set-show-spectrum').checked,
-    showWaterfall: document.getElementById('set-show-waterfall').checked,
-    spectrumRatio: spectrumRatio,
-    panelHeight: panelHeight,
+    skimmerShowSpectrum: document.getElementById('set-skimmer-show-spectrum').checked,
+    skimmerShowWaterfall: document.getElementById('set-skimmer-show-waterfall').checked,
+    skimmerSpectrumRatio: settings.skimmerSpectrumRatio || 0.4,
+    skimmerPanelHeight: settings.skimmerPanelHeight || 300,
+    readerShowSpectrum: document.getElementById('set-reader-show-spectrum').checked,
+    readerShowWaterfall: document.getElementById('set-reader-show-waterfall').checked,
+    readerSpectrumRatio: settings.readerSpectrumRatio || 0.4,
+    readerPanelHeight: settings.readerPanelHeight || 200,
     cwxMacros: Array.from({ length: 5 }, (_, i) => ({
       label: document.getElementById(`set-macro-label-${i}`).value.trim() || DEFAULT_MACROS[i].label,
       text: document.getElementById(`set-macro-text-${i}`).value.trim() || DEFAULT_MACROS[i].text,
@@ -584,9 +608,8 @@ async function saveSettingsUi() {
   // Apply theme
   applyTheme(newSettings.lightMode);
 
-  // Apply spectrum/waterfall visibility
-  showSpectrum = newSettings.showSpectrum !== false;
-  showWaterfall = newSettings.showWaterfall !== false;
+  // Apply display settings for the current mode
+  applyModeDisplaySettings(currentMode);
   resizeCanvases();
 
   settingsOverlay.classList.remove('open');
@@ -722,9 +745,18 @@ let modeSwitchTime = 0;
 const MODE_SWITCH_SETTLE_MS = 500; // Ignore decodes for 500ms after switching modes
 
 function setDecodeMode(mode) {
+  // Save current mode's display settings before switching
+  if (settings && currentMode) saveModeDisplaySettings();
+
   currentMode = mode;
   modeToggle.checked = mode === 'reader';
   modeSwitchTime = Date.now();
+
+  // Apply display settings for the new mode
+  if (settings) {
+    applyModeDisplaySettings(mode);
+    resizeCanvases();
+  }
 
   // Clear waterfall when switching modes (zoom level changes)
   try { waterfallCtx.clearRect(0, 0, waterfallCanvas.width, waterfallCanvas.height); } catch {}
@@ -1048,11 +1080,8 @@ async function init() {
     tuningLine.style.display = 'block';
   }
 
-  // Apply spectrum/waterfall visibility and panel size
-  showSpectrum = settings.showSpectrum !== false;
-  showWaterfall = settings.showWaterfall !== false;
-  spectrumRatio = settings.spectrumRatio || 0.4;
-  panelHeight = settings.panelHeight || 300;
+  // Apply display settings for the restored mode
+  applyModeDisplaySettings(currentMode);
   resizeCanvases();
 
   // Load macro buttons
