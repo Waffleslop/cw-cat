@@ -1,6 +1,6 @@
 {
   "name": "cw-cat",
-  "version": "0.2.0-beta.3",
+  "version": "0.2.0-beta.4",
   "description": "CW Skimmer for FlexRadio 6000 — decodes CW signals from DAX IQ and reports spots",
   "author": {
     "name": "Casey Stanton"
