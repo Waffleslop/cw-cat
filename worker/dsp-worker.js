@@ -859,6 +859,24 @@ parentPort.on('message', (msg) => {
         if (USE_STFT_CHANNELIZER) stftChannelizer.clear();
         break;
 
+      case 'reader-reset':
+        if (readerMode) {
+          console.log('[DSP] Reader reset — clearing all decode state');
+          channelState.clear();
+          recentlyEvicted.clear();
+          readerChannelFreq = null;
+          readerChannelKey = null;
+          readerSearchCount = 0;
+          if (USE_STFT_CHANNELIZER) stftChannelizer.clear();
+          if (signalDetector) signalDetector.reset();
+          if (fftProcessor) fftProcessor._avgInitialized = false;
+          parentPort.postMessage({
+            type: 'decode',
+            data: { freqOffset: 0, text: '', wpm: 0, snr: 0 },
+          });
+        }
+        break;
+
       case 'stop':
         channelState.clear();
         if (USE_STFT_CHANNELIZER) stftChannelizer.clear();

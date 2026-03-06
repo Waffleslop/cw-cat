@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld('api', {
   // CWX (CW transmit)
   cwxSend: (text) => ipcRenderer.send('cwx-send', text),
   cwxClear: () => ipcRenderer.send('cwx-clear'),
+  readerReset: () => ipcRenderer.send('reader-reset'),
 
   // Events from main process
   onStatus: (cb) => ipcRenderer.on('status', (_e, data) => cb(data)),

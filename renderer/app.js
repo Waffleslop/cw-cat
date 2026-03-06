@@ -716,6 +716,13 @@ document.getElementById('reader-clear-btn').addEventListener('click', () => {
   readerText.textContent = '';
 });
 
+// Reader reset — full decode pipeline reset
+document.getElementById('reader-reset-btn').addEventListener('click', () => {
+  readerText.textContent = '';
+  readerWpm.textContent = '-- WPM';
+  window.api.readerReset();
+});
+
 // --- Mode toggle (Skimmer / Reader) ---
 // Reader mode zoom: show ±READER_ZOOM_HZ around center instead of full bandwidth
 const READER_ZOOM_HZ = 10000; // ±10 kHz

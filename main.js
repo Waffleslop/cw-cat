@@ -666,6 +666,11 @@ ipcMain.on('cwx-clear', () => {
   }
 });
 
+ipcMain.on('reader-reset', () => {
+  sendToDspWorker({ type: 'reader-reset' });
+  sendLog('[Reader] Decode reset');
+});
+
 ipcMain.handle('get-status', () => {
   return {
     radioConnected: smartSdr ? smartSdr.connected : false,
