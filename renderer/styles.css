@@ -1066,7 +1066,13 @@ body.log-open .main-content {
   min-height: 100%;
 }
 
-.reader-clear-btn {
+.reader-header-actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.reader-btn {
   background: var(--bg-tertiary);
   border: 1px solid var(--border);
   color: var(--text-secondary);
@@ -1077,7 +1083,7 @@ body.log-open .main-content {
   font-family: inherit;
 }
 
-.reader-clear-btn:hover {
+.reader-btn:hover {
   background: var(--accent-dim);
   color: var(--text-primary);
 }

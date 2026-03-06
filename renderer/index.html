@@ -143,8 +143,10 @@
         <h3>CW Reader</h3>
         <span class="reader-freq" id="reader-freq">--</span>
         <span id="reader-wpm">-- WPM</span>
-        <button class="reader-clear-btn" id="reader-clear-btn" title="Clear decoded text">Clear</button>
-        <button class="reader-clear-btn" id="reader-reset-btn" title="Reset decoder — clears all state and re-locks signal">Reset</button>
+        <div class="reader-header-actions">
+          <button class="reader-btn" id="reader-reset-btn" title="Reset decoder — clears all state and re-locks signal">Reset</button>
+          <button class="reader-btn" id="reader-clear-btn" title="Clear decoded text">Clear</button>
+        </div>
       </div>
       <div class="reader-text-container">
         <pre class="reader-text" id="reader-text"></pre>
