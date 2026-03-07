@@ -51,6 +51,7 @@ const DEFAULT_SETTINGS = {
   readerShowWaterfall: true,
   readerSpectrumRatio: 0.4,
   readerPanelHeight: 200,
+  alwaysOnTop: false,
   decodeMode: 'skimmer',
   cwxMacros: [
     { label: 'CQ', text: 'CQ CQ CQ DE {MYCALL} {MYCALL} K' },
@@ -162,6 +163,11 @@ function createWindow() {
   // Restore maximized state after window is ready
   if (useSaved && saved.isMaximized) {
     win.maximize();
+  }
+
+  // Restore always-on-top
+  if (settings && settings.alwaysOnTop) {
+    win.setAlwaysOnTop(true);
   }
 
   // Track restored bounds for saving when maximized
@@ -619,6 +625,11 @@ ipcMain.handle('save-settings', (_e, newSettings) => {
     minWpm: settings.minWpm,
     maxWpm: settings.maxWpm,
   });
+
+  // Always on top
+  if (win && !win.isDestroyed()) {
+    win.setAlwaysOnTop(!!settings.alwaysOnTop);
+  }
 
   sendStatus();
   return true;

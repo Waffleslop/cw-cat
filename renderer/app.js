@@ -556,6 +556,7 @@ async function loadSettingsUi() {
   document.getElementById('set-skimmer-show-waterfall').checked = settings.skimmerShowWaterfall !== false;
   document.getElementById('set-reader-show-spectrum').checked = settings.readerShowSpectrum !== false;
   document.getElementById('set-reader-show-waterfall').checked = settings.readerShowWaterfall !== false;
+  document.getElementById('set-always-on-top').checked = !!settings.alwaysOnTop;
 
   // CWX Macros
   const macros = settings.cwxMacros || DEFAULT_MACROS;
@@ -594,6 +595,7 @@ async function saveSettingsUi() {
     skimmerPanelHeight: settings.skimmerPanelHeight || 300,
     readerShowSpectrum: document.getElementById('set-reader-show-spectrum').checked,
     readerShowWaterfall: document.getElementById('set-reader-show-waterfall').checked,
+    alwaysOnTop: document.getElementById('set-always-on-top').checked,
     readerSpectrumRatio: settings.readerSpectrumRatio || 0.4,
     readerPanelHeight: settings.readerPanelHeight || 200,
     cwxMacros: Array.from({ length: 5 }, (_, i) => ({
@@ -628,19 +630,24 @@ document.getElementById('set-light-mode').addEventListener('change', (e) => {
   applyTheme(e.target.checked);
 });
 
-settingsCancel.addEventListener('click', () => {
-  // Revert theme if changed in settings but not saved
+function closeSettingsWithoutSaving() {
   applyTheme(!!settings.lightMode);
   settingsOverlay.classList.remove('open');
-});
+}
 
+settingsCancel.addEventListener('click', closeSettingsWithoutSaving);
 settingsSave.addEventListener('click', saveSettingsUi);
 
 // Close overlay on background click
 settingsOverlay.addEventListener('click', (e) => {
-  if (e.target === settingsOverlay) {
-    applyTheme(!!settings.lightMode);
-    settingsOverlay.classList.remove('open');
+  if (e.target === settingsOverlay) closeSettingsWithoutSaving();
+});
+
+// ESC to close settings
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && settingsOverlay.classList.contains('open')) {
+    e.preventDefault();
+    closeSettingsWithoutSaving();
   }
 });
 

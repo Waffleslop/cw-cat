@@ -406,11 +406,23 @@ table.signals-table tr.new-spot {
   padding: 24px;
 }
 
+.settings-title-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+
 .settings-panel h2 {
   font-size: 16px;
   color: var(--accent);
-  margin-bottom: 20px;
   font-weight: 600;
+  margin: 0;
+}
+
+.settings-helper {
+  font-size: 11px;
+  color: var(--text-dim);
 }
 
 .settings-group {
