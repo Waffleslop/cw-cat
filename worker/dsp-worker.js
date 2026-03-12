@@ -511,7 +511,8 @@ function processIqBlock(iqData) {
 
 // Reader mode: find strongest signal near slice center and decode it
 const READER_SEARCH_HZ = 3000; // Search ±3 kHz around center for initial lock
-const READER_FALLBACK_FRAMES = 10; // After this many failed searches, lock to slice offset directly
+const READER_FALLBACK_FRAMES = 30; // After this many failed searches, lock to slice offset directly
+                                    // Must exceed signal detector warmup (10) + persistence (5) + margin
 let readerChannelFreq = null; // Current reader channel frequency (null = not yet locked)
 let readerChannelKey = null;  // STFT channelizer key (Math.round of freq)
 let readerSearchCount = 0;    // Number of consecutive failed signal searches
@@ -633,7 +634,10 @@ function processReaderMode(iqData, currentTime) {
     magnitudes = state.channel.process(iqData);
   }
 
-  if (!magnitudes || magnitudes.length === 0) return;
+  if (!magnitudes || magnitudes.length === 0) {
+    if (diagBlockCount <= 1) console.log(`[DSP] Reader: no magnitudes from STFT (key=${readerChannelKey}, channels=${stftChannelizer ? stftChannelizer.channelCount : '?'})`);
+    return;
+  }
 
   // Envelope detection
   const outputRate = USE_STFT_CHANNELIZER ? stftChannelizer.outputRate : state.channel.outputRate;
@@ -642,6 +646,16 @@ function processReaderMode(iqData, currentTime) {
   // Dynamic range check — require minimum DR to avoid feeding noise to decoder
   // Lowered to 2.0 for reader mode (user explicitly tuned here, trust the signal)
   const dr = state.envelope._peakMag / (state.envelope._noiseMag + 1e-10);
+  if (diagBlockCount <= 1) {
+    // Log magnitude stats and DR every diagnostic cycle
+    let magMin = Infinity, magMax = -Infinity, magSum = 0;
+    for (let i = 0; i < magnitudes.length; i++) {
+      if (magnitudes[i] < magMin) magMin = magnitudes[i];
+      if (magnitudes[i] > magMax) magMax = magnitudes[i];
+      magSum += magnitudes[i];
+    }
+    console.log(`[DSP] Reader: mag=[${magMin.toExponential(2)}..${magMax.toExponential(2)}] avg=${(magSum/magnitudes.length).toExponential(2)} n=${magnitudes.length} peak=${state.envelope._peakMag.toExponential(2)} noise=${state.envelope._noiseMag.toExponential(2)} DR=${dr.toFixed(1)} transitions=${transitions.length} freq=${readerChannelFreq?.toFixed(0)}Hz`);
+  }
   if (dr < 2.0) return;
 
   // Morse decoding
@@ -825,8 +839,9 @@ parentPort.on('message', (msg) => {
           const oldSlice = sliceFreqMHz;
           sliceFreqMHz = msg.sliceFreqMHz;
           console.log(`[DSP] Slice frequency: ${sliceFreqMHz.toFixed(6)} MHz`);
-          // If in reader mode and slice moved significantly, full reset and re-search
-          if (readerMode && oldSlice > 0 && Math.abs(sliceFreqMHz - oldSlice) > 0.0005) {
+          // If in reader mode and slice changed, full reset and re-search
+          // Also triggers when first frequency arrives (oldSlice === 0) to fix startup race
+          if (readerMode && (oldSlice === 0 || Math.abs(sliceFreqMHz - oldSlice) > 0.0005)) {
             console.log(`[DSP] Slice retuned — reader clearing old channel and re-searching`);
             // Remove old channel completely so stale decode stops immediately
             if (readerChannelKey !== null) {
