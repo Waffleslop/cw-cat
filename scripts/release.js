@@ -83,7 +83,10 @@ ${checksums}
   console.log('');
 
   const assetArgs = assets.map(a => `"${a.path}"`).join(' ');
-  const cmd = `gh release create "${tag}" --title "${title}" --notes-file "${bodyFile}" ${assetArgs}`;
+  // --latest: override GitHub's auto-prerelease detection for beta tags.
+  // Without this, GitHub marks "beta" tags as pre-release, which breaks
+  // electron-updater's /releases/latest endpoint (returns 404).
+  const cmd = `gh release create "${tag}" --latest --title "${title}" --notes-file "${bodyFile}" ${assetArgs}`;
 
   try {
     console.log(`Running: ${cmd}\n`);

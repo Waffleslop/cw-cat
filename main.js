@@ -772,12 +772,14 @@ autoUpdater.on('error', (err) => {
   const msg = err?.message || String(err);
   if (msg.includes('ENOENT') && msg.includes('app-update.yml')) {
     sendLog('[updater] No app-update.yml — portable build, using GitHub API fallback');
+    checkForUpdatesManual();
     return;
   }
   sendLog(`[updater] Error: ${msg}`);
-  if (win && !win.isDestroyed()) {
-    win.webContents.send('update-error', msg);
-  }
+  // Fall back to manual GitHub API check — electron-updater may fail if all
+  // releases are marked as pre-release (GitHub auto-detects "beta" tags)
+  sendLog('[updater] Falling back to GitHub API check');
+  checkForUpdatesManual();
 });
 
 // Open external URLs
