@@ -520,8 +520,9 @@ function updateStatus(status) {
   const rate = status.sampleRate ? (status.sampleRate / 1000).toFixed(0) + ' kHz' : '--';
   iqInfo.textContent = `IQ: ${rate} ch${status.daxIqChannel || '?'}`;
 
-  statusText.textContent = status.streamActive ? 'Receiving IQ data' :
-    (status.radioConnected ? 'Connected, waiting for IQ stream' : 'Disconnected');
+  statusText.textContent = status.iqFlowing ? 'Receiving IQ data' :
+    (status.streamActive ? 'Connected, waiting for IQ data...' :
+    (status.radioConnected ? 'Connected, setting up DAX IQ...' : 'Disconnected'));
 }
 
 function setDot(el, connected) {

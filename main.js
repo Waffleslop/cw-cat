@@ -156,6 +156,7 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      backgroundThrottling: false, // Keep DSP/IPC running when window loses focus
     },
     title: 'CW CAT',
   });
@@ -289,6 +290,8 @@ function stopIqPipeline() {
     vitaReceiver = null;
   }
   iqBuffer = null;
+  iqFlowing = false;
+  if (iqFlowTimer) { clearTimeout(iqFlowTimer); iqFlowTimer = null; }
 }
 
 // --- Spot handling ---
@@ -377,6 +380,7 @@ function connectRadio() {
   vitaReceiver.on('iq-data', (samples) => {
     vitaPacketCount++;
     vitaIqSamples += samples.length;
+    markIqFlowing();
     const blocks = iqBuffer.write(samples);
     vitaBlocksSent += blocks.length;
     for (const block of blocks) {
@@ -428,18 +432,25 @@ function connectRadio() {
       sendLog('[Radio] Connected to SmartSDR');
       sendStatus();
 
-      // Wait briefly for subscription status messages to arrive (slices, pans)
-      // before creating the DAX IQ stream
-      setTimeout(() => {
-        const channel = settings.daxIqChannel || 1;
-        const rate = settings.sampleRate || 192000;
+      // Poll for panadapter availability before creating the DAX IQ stream.
+      // SmartSDR sends subscription status asynchronously — may take >1.5s on slow setups.
+      const channel = settings.daxIqChannel || 1;
+      const rate = settings.sampleRate || 192000;
+      let panRetries = 0;
+      const maxPanRetries = 10; // Try for up to 10 seconds
 
-        // Assign DAX IQ channel to the first panadapter
+      const trySetupDaxIq = () => {
         const panId = smartSdr.getFirstPanadapterId();
         if (panId) {
           smartSdr.setPanDaxIq(panId, channel);
+          sendLog(`[Radio] Assigned DAX IQ channel ${channel} to panadapter ${panId}`);
+        } else if (panRetries < maxPanRetries) {
+          panRetries++;
+          if (panRetries === 1) sendLog('[Radio] Waiting for panadapter status from radio...');
+          setTimeout(trySetupDaxIq, 1000);
+          return; // Don't create stream yet — wait for pan
         } else {
-          sendLog('[Radio] WARNING: No panadapter found — DAX IQ may not flow. Assign DAX IQ channel in SmartSDR.');
+          sendLog('[Radio] WARNING: No panadapter found after 10s — DAX IQ may not flow. Assign DAX IQ channel in SmartSDR.');
         }
 
         // Log known state
@@ -451,10 +462,16 @@ function connectRadio() {
             sendLog(`[Radio] Failed to create DAX IQ stream: ${err}`);
           } else {
             sendLog(`[Radio] DAX IQ stream active: ${streamId}, rate=${rate}`);
+            // Filter VITA-49 to only accept this stream — prevents interference
+            // from other apps' DAX audio or data streams on the same radio
+            if (vitaReceiver) vitaReceiver.setStreamFilter(streamId);
           }
           sendStatus();
         });
-      }, 1500);
+      };
+
+      // Start polling after initial 1s delay for subscriptions
+      setTimeout(trySetupDaxIq, 1000);
     });
 
     smartSdr.on('disconnected', () => {
@@ -570,6 +587,22 @@ function disconnectOutputs() {
 
 // --- Status ---
 
+let iqFlowing = false; // True when VITA-49 IQ packets have arrived recently
+let iqFlowTimer = null;
+
+function markIqFlowing() {
+  if (!iqFlowing) {
+    iqFlowing = true;
+    sendStatus();
+  }
+  // Reset after 3s of no packets
+  if (iqFlowTimer) clearTimeout(iqFlowTimer);
+  iqFlowTimer = setTimeout(() => {
+    iqFlowing = false;
+    sendStatus();
+  }, 3000);
+}
+
 function sendStatus() {
   if (!win || win.isDestroyed()) return;
   win.webContents.send('status', {
@@ -580,6 +613,7 @@ function sendStatus() {
     sampleRate: settings ? settings.sampleRate : 0,
     daxIqChannel: settings ? settings.daxIqChannel : 0,
     streamActive: vitaReceiver != null,
+    iqFlowing,
   });
 }
 
