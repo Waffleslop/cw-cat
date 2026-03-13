@@ -3,6 +3,9 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('api', {
   openExternal: (url) => ipcRenderer.send('open-external', url),
 
+  // App info
+  getVersion: () => ipcRenderer.invoke('get-version'),
+
   // Settings
   getSettings: () => ipcRenderer.invoke('get-settings'),
   saveSettings: (s) => ipcRenderer.invoke('save-settings', s),

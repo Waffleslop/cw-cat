@@ -1109,6 +1109,12 @@ async function init() {
   if (!settings.telemetryNoticeSeen) {
     document.getElementById('telemetry-banner').style.display = 'flex';
   }
+
+  // Display app version in settings footer
+  const ver = await window.api.getVersion();
+  if (ver) {
+    document.getElementById('settings-version').textContent = `v${ver} \u2014 Casey Stanton, K3SBP`;
+  }
 }
 
 init();

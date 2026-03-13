@@ -619,6 +619,7 @@ function sendStatus() {
 
 // --- IPC handlers ---
 
+ipcMain.handle('get-version', () => app.getVersion());
 ipcMain.handle('get-settings', () => settings);
 
 ipcMain.handle('save-settings', (_e, newSettings) => {
