@@ -399,8 +399,12 @@ function connectRadio() {
       rawPacketLog++;
       const word0 = buf.readUInt32BE(0);
       const pktType = (word0 >>> 28) & 0x0F;
+      const classId = (word0 >>> 27) & 1;
+      const trailer = (word0 >>> 26) & 1;
+      const tsi = (word0 >>> 22) & 3;
+      const tsf = (word0 >>> 20) & 3;
       const streamId = buf.length >= 8 ? buf.readUInt32BE(4) : 0;
-      sendLog(`[VITA-49] Raw packet #${rawPacketLog}: len=${buf.length}, type=0x${pktType.toString(16)}, streamId=0x${streamId.toString(16).padStart(8, '0')}, word0=0x${word0.toString(16).padStart(8, '0')}`);
+      sendLog(`[VITA-49] Raw packet #${rawPacketLog}: len=${buf.length}, type=0x${pktType.toString(16)}, streamId=0x${streamId.toString(16).padStart(8, '0')}, word0=0x${word0.toString(16).padStart(8, '0')}, C=${classId} T=${trailer} TSI=${tsi} TSF=${tsf}`);
     }
     origParse(buf);
   };
