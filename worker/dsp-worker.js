@@ -774,7 +774,9 @@ function tryExtractCallsign(key, state) {
 parentPort.on('message', (msg) => {
   try {
     switch (msg.type) {
-      case 'configure':
+      case 'configure': {
+        const prevRate = sampleRate;
+        const prevFftSize = fftSize;
         if (msg.sampleRate) sampleRate = msg.sampleRate;
         if (msg.fftSize) fftSize = msg.fftSize;
         if (msg.threshold) threshold = msg.threshold;
@@ -794,10 +796,19 @@ parentPort.on('message', (msg) => {
         if (signalDetector) signalDetector.setThreshold(threshold);
 
         // Reinitialize if FFT size or sample rate changed
-        if (!fftProcessor || fftProcessor.size !== fftSize) {
+        if (!fftProcessor || fftSize !== prevFftSize || sampleRate !== prevRate) {
+          if (sampleRate !== prevRate) {
+            console.log(`[DSP] Sample rate changed: ${prevRate} → ${sampleRate} — reinitializing`);
+            channelState.clear();
+            recentlyEvicted.clear();
+            readerChannelFreq = null;
+            readerChannelKey = null;
+            totalSamplesProcessed = 0;
+          }
           initialize();
         }
         break;
+      }
 
       case 'iq-block': {
         const iqData = new Float32Array(msg.block);

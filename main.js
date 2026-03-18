@@ -377,10 +377,36 @@ function connectRadio() {
   let vitaIqSamples = 0;
   let vitaBlocksSent = 0;
 
+  // Auto-detect actual sample rate from IQ data flow
+  let rateDetectStart = null;
+  let rateDetectSamples = 0;
+  let rateDetected = false;
+
   vitaReceiver.on('iq-data', (samples) => {
     vitaPacketCount++;
     vitaIqSamples += samples.length;
     markIqFlowing();
+
+    // Measure actual IQ rate over first 3 seconds
+    if (!rateDetected) {
+      if (!rateDetectStart) rateDetectStart = Date.now();
+      rateDetectSamples += samples.length;
+      const elapsed = (Date.now() - rateDetectStart) / 1000;
+      if (elapsed >= 3) {
+        rateDetected = true;
+        // samples.length counts interleaved I+Q floats, so divide by 2 for IQ pair rate
+        const measuredRate = Math.round(rateDetectSamples / elapsed / 2);
+        const standardRates = [24000, 48000, 96000, 192000];
+        const detectedRate = standardRates.reduce((best, r) =>
+          Math.abs(r - measuredRate) < Math.abs(best - measuredRate) ? r : best
+        );
+        sendLog(`[IQ] Auto-detected sample rate: ${detectedRate} Hz (measured ${measuredRate} Hz over ${elapsed.toFixed(1)}s)`);
+        if (detectedRate !== sampleRate) {
+          sendLog(`[IQ] WARNING: Radio is streaming at ${detectedRate} Hz, not ${sampleRate} Hz — reconfiguring DSP to match`);
+          sendToDspWorker({ type: 'configure', sampleRate: detectedRate });
+        }
+      }
+    }
     const blocks = iqBuffer.write(samples);
     vitaBlocksSent += blocks.length;
     for (const block of blocks) {
