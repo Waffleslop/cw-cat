@@ -233,6 +233,10 @@ function startDspWorker() {
         handleDecodedSpot(msg.data);
         break;
 
+      case 'diag':
+        sendLog(`[DSP] ${msg.data}`);
+        break;
+
       case 'channel-created':
         if (telemetry) telemetry.recordChannelCreated();
         break;
@@ -415,6 +419,13 @@ function connectRadio() {
         block: block.buffer,
       }, [block.buffer]);
     }
+  });
+
+  // Log byte order detection result
+  vitaReceiver.on('byte-order', (info) => {
+    sendLog(`[VITA-49] Byte order: ${info.order} (LE=${info.leScore}/${info.testCount}, BE=${info.beScore}/${info.testCount})`);
+    sendLog(`[VITA-49] First IQ — LE: I=${info.leI}, Q=${info.leQ} | BE: I=${info.beI}, Q=${info.beQ}`);
+    sendLog(`[VITA-49] Raw bytes[0-7]: ${info.rawHex}`);
   });
 
   // Log first few raw UDP packets for debugging

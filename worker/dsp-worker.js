@@ -152,8 +152,12 @@ function processIqBlock(iqData) {
       if (iqData[i] < iqMin) iqMin = iqData[i];
       if (iqData[i] > iqMax) iqMax = iqData[i];
     }
-    console.log(`[DSP] blocks=${diagBlockCount}, spectrums=${diagSpectrumSent}, signals=${diagSignalsFound}, channels=${channelState.size}, threshold=${threshold}dB, transitions=${diagTransitions}`);
-    console.log(`[DSP] IQ sample range: ${iqMin.toExponential(3)} to ${iqMax.toExponential(3)}`);
+    const diagMsg = `blocks=${diagBlockCount}, signals=${diagSignalsFound}, channels=${channelState.size}, threshold=${threshold}dB, transitions=${diagTransitions}, rate=${sampleRate}`;
+    const iqMsg = `IQ range: ${iqMin.toExponential(2)} to ${iqMax.toExponential(2)}`;
+    console.log(`[DSP] ${diagMsg}`);
+    console.log(`[DSP] ${iqMsg}`);
+    // Forward to main thread for user-visible log
+    parentPort.postMessage({ type: 'diag', data: `${diagMsg} | ${iqMsg}` });
     // Log per-channel decode status
     for (const [key, state] of channelState) {
       const env = state.envelope;
